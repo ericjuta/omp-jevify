@@ -65,6 +65,12 @@ python3 evals/run.py --ref v0.1.0 --out /tmp/base.json          # a released ver
 python3 evals/run.py --out /tmp/cand.json --compare /tmp/base.json   # working tree
 ```
 
+`evals/holdout.json` is a sealed set of 12 differently worded prompts (7 should trigger,
+5 should not), written by a separate agent that never saw the skill or `cases.json`. Do not
+read or edit it while tuning `SKILL.md`; run it only to check a candidate
+(`--cases evals/holdout.json`). Once someone tunes against it, it stops being a holdout
+and should be replaced.
+
 It needs model access, costs real tokens and varies run to run, so it is run by hand
 before releases that change `SKILL.md`, not in CI. Recorded results live in
 `evals/results/`. Reported rates:

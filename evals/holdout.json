@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "notes": "Sealed holdout: do not read or tune against. Run with --cases evals/holdout.json.",
+  "cases": [
+    {
+      "id": "h01",
+      "expect": "trigger",
+      "prompt": "logs/worker.log is noisy. Sort the 400 records by whether they suggest a billing defect needing investigation or routine operational chatter; send me the suspicious line numbers and brief reasons, not a generic log summary."
+    },
+    {
+      "id": "h02",
+      "expect": "no_trigger",
+      "prompt": "How many ERROR lines are in logs/worker.log? Just the count."
+    },
+    {
+      "id": "h03",
+      "expect": "trigger",
+      "prompt": "The pricing-line docstrings across billing/ sound interchangeable. Check the 28 against what their functions actually do after HEAD and flag any descriptions that misstate the currency conversion or cent rounding; say if none do."
+    },
+    {
+      "id": "h04",
+      "expect": "trigger",
+      "prompt": "fetch_rate gets used 28 times under billing/. Separate callers whose legacy argument matters to the caller but is ignored by rates.py from ordinary callers. Only send the questionable locations."
+    },
+    {
+      "id": "h05",
+      "expect": "no_trigger",
+      "prompt": "Count the occurrences of legacy=True in billing/*.py. No analysis needed."
+    },
+    {
+      "id": "h06",
+      "expect": "trigger",
+      "prompt": "review/findings.jsonl has 28 comments on this change. Check their claims against the cited code on a consistent actionable-vs-noise basis, then report the weak or misleading findings with IDs and reasons."
+    },
+    {
+      "id": "h07",
+      "expect": "no_trigger",
+      "prompt": "Does finding F01 in review/findings.jsonl hold up at its cited location? Answer for F01 only."
+    },
+    {
+      "id": "h08",
+      "expect": "trigger",
+      "prompt": "The billing modules have 28 line-item calculators plus a couple other functions. Decide which functions actually belong to the commit's rounding fix and point out the unrelated ones. Names and why, please."
+    },
+    {
+      "id": "h09",
+      "expect": "no_trigger",
+      "prompt": "Why does billing/money.py use Decimal(str(value)) with ROUND_HALF_EVEN in HEAD? Explain that one design choice."
+    },
+    {
+      "id": "h10",
+      "expect": "trigger",
+      "prompt": "HEAD claims to fix rounding. Check the changed lines against that claim and surface the changes that serve some other purpose, with file locations. Don't just recite the commit message."
+    },
+    {
+      "id": "h11",
+      "expect": "no_trigger",
+      "prompt": "Write one focused test for the half-even tie behavior of billing.money.round_cents. Leave the rest of billing alone."
+    },
+    {
+      "id": "h12",
+      "expect": "trigger",
+      "prompt": "billing funcs look copy-pasted. check the return lines for the 28 item calculators: does conversion happen before cent rounding, or are there straglers doing it backwards? just the odd locations, if any."
+    }
+  ]
+}
