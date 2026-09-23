@@ -10,7 +10,7 @@ sweeps. The orchestrator decides and reads only flagged units; subagents edit, n
 This generalises Can Bölük's Jevict ([thread](https://x.com/_can1357/status/2102524777776677104);
 `skill://jevict` if installed) beyond tests; scores are not proof.
 
-Contents: use · 0–8 loop · groups · API · facts · recipes A–F · write-time rule · guardrails.
+Contents: use · quick path · 0–8 loop · groups · API · facts · recipes A–F · write-time rule · guardrails.
 
 ## When to use
 
@@ -18,6 +18,37 @@ Contents: use · 0–8 loop · groups · API · facts · recipes A–F · write-
   diagnostics, sanitized logs, findings or test units. Below ~20, read them directly.
 - Use a compiler, grep count, ast-grep rule or test instead when it answers deterministically.
   Cross-unit reasoning needs sibling/group context; otherwise read directly.
+
+## Quick path: read-only answers (do this first)
+
+You loaded this skill for a 20+ item job, so judge the items; do not read them yourself
+first. Reading every item by hand is the failure this skill exists to prevent. For a
+read-only answer ("which of these stand out?"), this is the whole job. Steps 1–8 below
+(pilot, calibration, re-judge) are for deletions, bulk edits or 150+ items.
+
+```python
+%load skill://jevify/jevify.py
+```
+
+```python
+Q = {"verdict": jv.choice(
+    "One changed hunk from a commit. Is it explained by the commit message below?",
+    explained="Every line changed is stated by the message or mechanically follows from it.",
+    mixed="Mostly explained, plus at least one added or changed line the message does not mention.",
+    unexplained="Changes behavior, config or code the message does not mention.",
+    unclear="Cannot tell from the hunk and message alone.")}
+import subprocess  # the full message, not just the title
+msg = subprocess.run(["git", "log", "-1", "--format=%B", "HEAD"], capture_output=True, text=True).stdout
+units = jv.git_units("HEAD", by="hunk")        # or rg_units / ast_units / line_units
+states = jv.states(units, lambda u: {"message": msg, **u})
+rows = await jv.run(states, Q, intent="hunks vs commit message")
+jv.tally(rows, "verdict")
+flagged = jv.flag(rows, lambda r: r["verdict"] != "explained" or r["verdict.explained"] < 0.7)
+jv.show(flagged, states)
+```
+
+Then read each flagged item's source, confirm or overturn it, and answer with the counts
+and the confirmed items. Change only `Q`, the unit source and the render; keep the rest.
 
 ## 0. Load the helper
 

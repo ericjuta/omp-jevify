@@ -20,7 +20,7 @@ one model's verdicts, not proof: read flagged items before acting on them.
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.1.1'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.1.2'
 ```
 
 Start a new OMP session afterwards. There is nothing else to set up:
