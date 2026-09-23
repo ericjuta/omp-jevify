@@ -1,0 +1,62 @@
+{
+	"schema": 1,
+	"notes": "Prompts state a goal only and never name the skill, except the keyword case, which is reported separately and never counted as evidence of automatic triggering.",
+	"cases": [
+		{
+			"id": "hunk_audit",
+			"expect": "trigger",
+			"prompt": "Go through every changed hunk in the HEAD commit and tell me which ones aren't explained by the commit message."
+		},
+		{
+			"id": "callsite_sweep",
+			"expect": "trigger",
+			"prompt": "fetch_rate's legacy flag is being removed. Check every call site of fetch_rate in billing/ and tell me which ones still need changing."
+		},
+		{
+			"id": "log_triage",
+			"expect": "trigger",
+			"prompt": "Triage logs/worker.log: bucket every ERROR and WARN line by likely cause and tell me which ones look like real bugs rather than transient noise."
+		},
+		{
+			"id": "findings_triage",
+			"expect": "trigger",
+			"prompt": "review/findings.jsonl has review findings for the HEAD commit. Go through all of them and tell me which are valid and worth fixing versus invalid or nits."
+		},
+		{
+			"id": "line_classify",
+			"expect": "trigger",
+			"prompt": "Classify every line in billing/ that computes a money amount by whether it rounds correctly, truncates, or does something else, and list the odd ones out."
+		},
+		{
+			"id": "summary",
+			"expect": "no_trigger",
+			"prompt": "Summarize what the HEAD commit does in three bullets."
+		},
+		{
+			"id": "count",
+			"expect": "no_trigger",
+			"prompt": "How many call sites of fetch_rate are there in billing/? Just the number."
+		},
+		{
+			"id": "single_file_review",
+			"expect": "no_trigger",
+			"prompt": "Review billing/money.py for correctness issues."
+		},
+		{
+			"id": "rename",
+			"expect": "no_trigger",
+			"prompt": "Rename RETRY_LIMIT to MAX_RETRIES in settings.py and update any references."
+		},
+		{
+			"id": "explain",
+			"expect": "no_trigger",
+			"prompt": "Explain how round_cents works and why half-even rounding matters for money."
+		},
+		{
+			"id": "keyword",
+			"expect": "trigger",
+			"keyword": true,
+			"prompt": "jevify the HEAD commit: which changed hunks aren't explained by the commit message?"
+		}
+	]
+}

@@ -20,11 +20,19 @@ one model's verdicts, not proof: read flagged items before acting on them.
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.1.0'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.1.1'
 ```
 
-Start a new OMP session afterwards. The skill appears as `jevify`; in the Python eval kernel
-load its helpers with:
+Start a new OMP session afterwards. There is nothing else to set up:
+
+- Ask for the kind of job it is for ("go through every changed hunk in this commit and tell
+  me which aren't explained by the message", "check every call site of X…") and the model
+  picks the skill from its description.
+- Or include the word `jevify` in the prompt. OMP's built-in `jevify` magic keyword adds
+  its own instructions for that turn, and the skill is picked up alongside.
+- Or type `/skill:jevify` to inject it directly.
+
+The model loads the helpers itself; by hand, in the Python eval kernel:
 
 ```python
 %load skill://jevify/jevify.py
@@ -41,6 +49,33 @@ measured harness facts and recipes.
 - `rg` and `git` for the diff and search extractors.
 - `uv` (or pip) for `jv.ast_units`, which installs `ast-grep-py` on first use into
   `${XDG_CACHE_HOME:-~/.cache}/jevify/` (the kernel's Python may have no pip).
+
+## Development
+
+`python3 -m unittest discover -s tests` runs the helper tests (no model calls; needs `git`,
+`rg`, and `uv` for the ast-grep test). CI runs them on every push.
+
+`evals/run.py` measures whether the skill triggers. Each case in `evals/cases.json` runs as
+a fresh `omp --mode json` session in a generated fixture repository
+(`evals/fixture.py`); prompts state a goal and never name the skill. The skill under test
+is pinned with a one-shot `--config` overlay, so the installed plugin does not interfere.
+
+```sh
+python3 evals/run.py --ref v0.1.0 --out /tmp/base.json          # a released version
+python3 evals/run.py --out /tmp/cand.json --compare /tmp/base.json   # working tree
+```
+
+It needs model access, costs real tokens and varies run to run, so it is run by hand
+before releases that change `SKILL.md`, not in CI. Recorded results live in
+`evals/results/`. Reported rates:
+
+- `auto_trigger`: goal-only prompts that should use the skill and opened it
+- `auto_judged`: of those, how many went on to run a judge batch
+- `false_trigger`: prompts that should not use it (summaries, counts, a single-file review,
+  a rename, an explanation) but opened it
+- `keyword`: the `jevify` keyword case, reported separately
+- `infra`: sessions with no tool call and no answer after one retry (provider or host
+  trouble), excluded from the rates
 
 ## License
 

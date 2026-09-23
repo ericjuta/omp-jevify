@@ -1,6 +1,6 @@
 {
 	"name": "@ericjuta/omp-jevify",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Oh My Pi skill for rubric-first bulk classification with the eval kernel's judge_batch (Jev)",
 	"license": "MIT",
 	"type": "module",

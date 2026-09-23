@@ -1,0 +1,53 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y ripgrep
+      - name: Validate skill frontmatter
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lines = Path('skills/jevify/SKILL.md').read_text(encoding='utf-8').splitlines()
+          if not lines or lines[0].strip() != '---':
+              raise SystemExit('SKILL.md must start with ---')
+          try:
+              end = next(i for i, line in enumerate(lines[1:], 1) if line.strip() == '---')
+          except StopIteration:
+              raise SystemExit('SKILL.md frontmatter must end with ---')
+          fields = {}
+          for line in lines[1:end]:
+              if ':' in line and not line.startswith((' ', '\t')):
+                  key, value = line.split(':', 1)
+                  fields[key.strip()] = value.strip()
+          if fields.get('name') != 'jevify' or not fields.get('description'):
+              raise SystemExit('SKILL.md requires name: jevify and a nonempty description')
+          PY
+      - name: Compile skill and eval runner
+        run: python3 -m py_compile skills/jevify/jevify.py evals/run.py evals/fixture.py
+      - name: Eval fixture still has a bulk-sized commit
+        run: |
+          python3 - <<'PY'
+          import subprocess, sys, tempfile
+          sys.path.insert(0, 'evals')
+          import fixture
+          with tempfile.TemporaryDirectory() as tmp:
+              repo = fixture.build(tmp + '/repo')
+              diff = subprocess.run(['git', 'show', '--format=', 'HEAD'], cwd=repo, check=True,
+                                    capture_output=True, text=True).stdout
+              hunks = diff.count('\n@@') + diff.startswith('@@')
+              if hunks < 20:
+                  raise SystemExit(f'fixture HEAD has {hunks} hunks; trigger cases need 20+')
+          PY
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v

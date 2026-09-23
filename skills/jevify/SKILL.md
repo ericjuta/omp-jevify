@@ -1,6 +1,6 @@
 ---
 name: jevify
-description: "Rubric-first bulk classification for OMP coding sessions via the eval kernel's judge_batch (Jev): refactor call-site sweeps, diff scope audits, diagnostic/log/finding triage, pruning. %load-able jv helpers for extraction, pilot, frozen questions, fallback-model detection, calibration, span deletion. Use for jevify or any 20+ homogeneous items with a per-item question."
+description: "Use when asked to go through, check, triage or classify every item in a long list and say which ones stand out: every changed hunk or file in a commit or PR (which aren't explained by its message), every call site after a refactor (which still need changing), every log line, compiler diagnostic, review finding or test. Also on the word jevify. Judges each item with the eval kernel's judge_batch (Jev) against questions frozen up front, with %load-able jv helpers. Not for summaries, counts, single-file reviews or plain edits."
 ---
 
 # Jevify
