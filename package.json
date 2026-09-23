@@ -1,0 +1,18 @@
+{
+	"name": "@ericjuta/omp-jevify",
+	"version": "0.1.0",
+	"description": "Oh My Pi skill for rubric-first bulk classification with the eval kernel's judge_batch (Jev)",
+	"license": "MIT",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ericjuta/omp-jevify.git"
+	},
+	"homepage": "https://github.com/ericjuta/omp-jevify#readme",
+	"bugs": {
+		"url": "https://github.com/ericjuta/omp-jevify/issues"
+	},
+	"keywords": ["omp", "oh-my-pi", "omp-plugin", "skill", "jev", "judge_batch"],
+	"files": ["skills", "README.md", "LICENSE"],
+	"omp": {}
+}
