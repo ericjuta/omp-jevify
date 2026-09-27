@@ -2,7 +2,7 @@
 name: jevify
 description: "Use when asked to go through, check, triage or classify every item in a long list and say which ones stand out: every changed hunk or file in a commit or PR (which aren't explained by its message), every call site after a refactor (which still need changing), every log line, compiler diagnostic, review finding or test. Also on the word jevify. Judges each item with the eval kernel's judge_batch (Jev) against questions frozen up front, with %load-able jv helpers. Not for summaries, counts, single-file reviews or plain edits."
 metadata:
-  version: 0.1.3
+  version: 0.1.4
 ---
 
 # Jevify
@@ -20,6 +20,12 @@ Contents: use · quick path · 0–8 loop · groups · API · facts · recipes A
   diagnostics, sanitized logs, findings or test units. Below ~20, read them directly.
 - Use a compiler, grep count, ast-grep rule or test instead when it answers deterministically.
   Cross-unit reasoning needs sibling/group context; otherwise read directly.
+- Measured 2026-09-27 (Opus 5.5, omp 18.3.5, graded evals): on ~30-item tasks and on a
+  12× fixture (340 hunks, 336 findings, 4.8k log lines), direct reading or a short script
+  matched or beat jevify on recall and precision at similar cost; a hunk audit that
+  scripted a rewrite-and-compare check scored 0.96 precision versus 0.52 via jevify.
+  Prefer a script when a rule decides; use jevify when each item needs judgment and no
+  script can decide it, and pilot before trusting it.
 
 ## Quick path: read-only answers (do this first)
 

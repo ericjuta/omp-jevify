@@ -1,0 +1,1017 @@
+{
+ "created": "2026-09-27",
+ "model": "claude-opus-5-5",
+ "note": "Graded runs (evals/grade.py). cases/holdout: scale 1; large: scale 12 (cases-large.json). thinking=configured means auto.",
+ "arms": {
+  "cases-none-cur": {
+   "schema": 1,
+   "results": "cases-none-cur.json",
+   "cases": "cases.json",
+   "arm": "none",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 1224,
+    "batch_cost": 0.06930915599999987
+   },
+   "summary": {
+    "overall": {
+     "n": 18,
+     "empty": 0,
+     "recall": 0.873,
+     "precision": 0.925,
+     "false_flags": 0.167,
+     "secs": 33.794,
+     "cost": 0.474,
+     "skill_read": 0.0,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.958,
+      "false_flags": 0.333,
+      "secs": 16.3,
+      "cost": 0.445,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.364,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 59.867,
+      "cost": 0.644,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "hunk_audit": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 18.567,
+      "cost": 0.463,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "keyword": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 34.467,
+      "cost": 0.288,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "line_classify": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 19.467,
+      "cost": 0.46,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "log_triage": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.667,
+      "false_flags": 0.667,
+      "secs": 54.1,
+      "cost": 0.545,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "cases-skill-1831": {
+   "schema": 1,
+   "results": "cases-skill-1831.json",
+   "cases": "cases.json",
+   "arm": "skill",
+   "omp": "omp/18.3.1",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 1224,
+    "batch_cost": 0.06930915599999987
+   },
+   "summary": {
+    "overall": {
+     "n": 18,
+     "empty": 0,
+     "recall": 0.909,
+     "precision": 0.958,
+     "false_flags": 0.111,
+     "secs": 47.4,
+     "cost": 0.578,
+     "skill_read": 0.5,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.958,
+      "false_flags": 0.333,
+      "secs": 26.267,
+      "cost": 0.479,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.545,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 61.4,
+      "cost": 0.663,
+      "skill_read": 0.333,
+      "judge_errors": 0
+     },
+     "hunk_audit": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 27.767,
+      "cost": 0.492,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "keyword": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 40.867,
+      "cost": 0.381,
+      "skill_read": 0.667,
+      "judge_errors": 0
+     },
+     "line_classify": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 61.633,
+      "cost": 0.727,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "log_triage": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.833,
+      "false_flags": 0.333,
+      "secs": 66.467,
+      "cost": 0.724,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "cases-skill-cur-high": {
+   "schema": 1,
+   "results": "cases-skill-cur-high.json",
+   "cases": "cases.json",
+   "arm": "skill",
+   "omp": "omp/18.3.5",
+   "thinking": "high",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 408,
+    "batch_cost": 0.024564455999999988
+   },
+   "summary": {
+    "overall": {
+     "n": 18,
+     "empty": 0,
+     "recall": 0.873,
+     "precision": 0.967,
+     "false_flags": 0.056,
+     "secs": 43.622,
+     "cost": 0.573,
+     "skill_read": 0.278,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 21.767,
+      "cost": 0.496,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.364,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 69.733,
+      "cost": 0.681,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "hunk_audit": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 25.367,
+      "cost": 0.505,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "keyword": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 37.1,
+      "cost": 0.348,
+      "skill_read": 0.333,
+      "judge_errors": 0
+     },
+     "line_classify": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 34.967,
+      "cost": 0.595,
+      "skill_read": 0.333,
+      "judge_errors": 0
+     },
+     "log_triage": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.833,
+      "false_flags": 0.333,
+      "secs": 72.8,
+      "cost": 0.81,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "cases-skill-cur": {
+   "schema": 1,
+   "results": "cases-skill-cur.json",
+   "cases": "cases.json",
+   "arm": "skill",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 1224,
+    "batch_cost": 0.06930915599999987
+   },
+   "summary": {
+    "overall": {
+     "n": 18,
+     "empty": 0,
+     "recall": 0.873,
+     "precision": 0.985,
+     "false_flags": 0.111,
+     "secs": 38.772,
+     "cost": 0.516,
+     "skill_read": 0.167,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.926,
+      "false_flags": 0.667,
+      "secs": 15.667,
+      "cost": 0.444,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.364,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 62.067,
+      "cost": 0.669,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "hunk_audit": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 16.867,
+      "cost": 0.459,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "keyword": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 34.667,
+      "cost": 0.283,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "line_classify": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 20.5,
+      "cost": 0.459,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "log_triage": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 82.867,
+      "cost": 0.78,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "holdout-none-cur": {
+   "schema": 1,
+   "results": "holdout-none-cur.json",
+   "cases": "holdout.json",
+   "arm": "none",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 1485,
+    "batch_cost": 0.08213885399999978
+   },
+   "summary": {
+    "overall": {
+     "n": 21,
+     "empty": 0,
+     "recall": 1.0,
+     "precision": 0.89,
+     "false_flags": 1.048,
+     "secs": 28.21,
+     "cost": 0.523,
+     "skill_read": 0.0,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "h01": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 35.967,
+      "cost": 0.589,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h03": {
+      "key": "docstring_mismatch",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 27.367,
+      "cost": 0.545,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h04": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 17.7,
+      "cost": 0.47,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h06": {
+      "key": "weak_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.451,
+      "false_flags": 7.333,
+      "secs": 60.733,
+      "cost": 0.61,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h08": {
+      "key": "unexplained_functions",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 23.033,
+      "cost": 0.502,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h10": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 20.133,
+      "cost": 0.496,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h12": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 12.533,
+      "cost": 0.45,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "holdout-skill-1831": {
+   "schema": 1,
+   "results": "holdout-skill-1831.json",
+   "cases": "holdout.json",
+   "arm": "skill",
+   "omp": "omp/18.3.1",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 1485,
+    "batch_cost": 0.08213885399999978
+   },
+   "summary": {
+    "overall": {
+     "n": 21,
+     "empty": 0,
+     "recall": 1.0,
+     "precision": 0.887,
+     "false_flags": 1.143,
+     "secs": 42.429,
+     "cost": 0.644,
+     "skill_read": 0.524,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "h01": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 48.9,
+      "cost": 0.73,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h03": {
+      "key": "docstring_mismatch",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 40.8,
+      "cost": 0.669,
+      "skill_read": 0.667,
+      "judge_errors": 0
+     },
+     "h04": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 27.7,
+      "cost": 0.603,
+      "skill_read": 0.667,
+      "judge_errors": 0
+     },
+     "h06": {
+      "key": "weak_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.433,
+      "false_flags": 8.0,
+      "secs": 121.467,
+      "cost": 1.0,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h08": {
+      "key": "unexplained_functions",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 22.0,
+      "cost": 0.554,
+      "skill_read": 0.333,
+      "judge_errors": 0
+     },
+     "h10": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 20.4,
+      "cost": 0.493,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h12": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 15.733,
+      "cost": 0.459,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "holdout-skill-cur-high": {
+   "schema": 1,
+   "results": "holdout-skill-cur-high.json",
+   "cases": "holdout.json",
+   "arm": "skill",
+   "omp": "omp/18.3.5",
+   "thinking": "high",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 495,
+    "batch_cost": 0.028267679999999955
+   },
+   "summary": {
+    "overall": {
+     "n": 21,
+     "empty": 0,
+     "recall": 1.0,
+     "precision": 0.89,
+     "false_flags": 1.095,
+     "secs": 43.0,
+     "cost": 0.638,
+     "skill_read": 0.476,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "h01": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 50.7,
+      "cost": 0.814,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h03": {
+      "key": "docstring_mismatch",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 44.767,
+      "cost": 0.693,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h04": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 33.9,
+      "cost": 0.505,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h06": {
+      "key": "weak_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.45,
+      "false_flags": 7.667,
+      "secs": 93.767,
+      "cost": 0.89,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h08": {
+      "key": "unexplained_functions",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 30.1,
+      "cost": 0.533,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h10": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 26.633,
+      "cost": 0.509,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h12": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 21.133,
+      "cost": 0.519,
+      "skill_read": 0.333,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "holdout-skill-cur": {
+   "schema": 1,
+   "results": "holdout-skill-cur.json",
+   "cases": "holdout.json",
+   "arm": "skill",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 1485,
+    "batch_cost": 0.08213885399999978
+   },
+   "summary": {
+    "overall": {
+     "n": 21,
+     "empty": 0,
+     "recall": 1.0,
+     "precision": 0.893,
+     "false_flags": 1.0,
+     "secs": 34.505,
+     "cost": 0.659,
+     "skill_read": 0.381,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "h01": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 50.4,
+      "cost": 0.749,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h03": {
+      "key": "docstring_mismatch",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 45.133,
+      "cost": 1.129,
+      "skill_read": 0.667,
+      "judge_errors": 0
+     },
+     "h04": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 18.3,
+      "cost": 0.464,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h06": {
+      "key": "weak_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.463,
+      "false_flags": 7.0,
+      "secs": 72.767,
+      "cost": 0.816,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "h08": {
+      "key": "unexplained_functions",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 22.967,
+      "cost": 0.508,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h10": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 19.067,
+      "cost": 0.491,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "h12": {
+      "key": "odd_money_lines",
+      "n": 3,
+      "empty": 0,
+      "recall": null,
+      "precision": null,
+      "false_flags": 0.0,
+      "secs": 12.9,
+      "cost": 0.457,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "large-none-cur": {
+   "schema": 1,
+   "results": "large-none-cur.json",
+   "cases": "cases-large.json",
+   "arm": "none",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 6150,
+    "batch_cost": 0.4997668620000036
+   },
+   "summary": {
+    "overall": {
+     "n": 12,
+     "empty": 0,
+     "recall": 0.901,
+     "precision": 0.986,
+     "false_flags": 0.417,
+     "secs": 77.158,
+     "cost": 0.202,
+     "skill_read": 0.0,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep_large": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.996,
+      "precision": 0.988,
+      "false_flags": 1.0,
+      "secs": 32.6,
+      "cost": 0.09,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage_large": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.609,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 180.3,
+      "cost": 0.477,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "hunk_audit_large": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.956,
+      "false_flags": 0.667,
+      "secs": 47.267,
+      "cost": 0.118,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "log_triage_large": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 48.467,
+      "cost": 0.125,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  },
+  "large-skill-cur": {
+   "schema": 1,
+   "results": "large-skill-cur.json",
+   "cases": "cases-large.json",
+   "arm": "skill",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 6150,
+    "batch_cost": 0.4997668620000036
+   },
+   "summary": {
+    "overall": {
+     "n": 12,
+     "empty": 0,
+     "recall": 0.88,
+     "precision": 0.866,
+     "false_flags": 4.667,
+     "secs": 82.392,
+     "cost": 0.222,
+     "skill_read": 0.75,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep_large": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.941,
+      "false_flags": 6.0,
+      "secs": 37.567,
+      "cost": 0.091,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage_large": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.544,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 156.133,
+      "cost": 0.412,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "hunk_audit_large": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.976,
+      "precision": 0.523,
+      "false_flags": 12.667,
+      "secs": 60.7,
+      "cost": 0.154,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "log_triage_large": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 75.167,
+      "cost": 0.233,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     }
+    }
+   }
+  }
+ }
+}

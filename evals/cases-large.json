@@ -1,0 +1,48 @@
+{
+	"schema": 1,
+	"notes": "These cases run the same fixture story at scale 12 (about 340 hunks, 336 findings, 4800 log lines), where reading every item directly is costly, to compare the skill and no-skill arms on correctness, time and cost. Prompts reuse the cases.json wording. callsite_sweep_large is an either control whose trigger is not scored.",
+	"cases": [
+		{
+			"id": "hunk_audit_large",
+			"expect": "trigger",
+			"scale": 12,
+			"key": "unexplained_hunks",
+			"prompt": "Go through every changed hunk in the HEAD commit and tell me which ones aren't explained by the commit message."
+		},
+		{
+			"id": "findings_triage_large",
+			"expect": "trigger",
+			"scale": 12,
+			"key": "valid_findings",
+			"prompt": "review/findings.jsonl has review findings for the HEAD commit. Go through all of them and tell me which are valid and worth fixing versus invalid or nits."
+		},
+		{
+			"id": "log_triage_large",
+			"expect": "trigger",
+			"scale": 12,
+			"key": "log_real_bugs",
+			"prompt": "Triage logs/worker.log: bucket every ERROR and WARN line by likely cause and tell me which ones look like real bugs rather than transient noise."
+		},
+		{
+			"id": "callsite_sweep_large",
+			"expect": "either",
+			"scale": 12,
+			"key": "legacy_callsites",
+			"prompt": "fetch_rate's legacy flag is being removed. Check every call site of fetch_rate in billing/ and tell me which ones still need changing."
+		},
+		{
+			"id": "count_large",
+			"expect": "no_trigger",
+			"scale": 12,
+			"key": null,
+			"prompt": "How many files does the HEAD commit change? Just the number."
+		},
+		{
+			"id": "summary_large",
+			"expect": "no_trigger",
+			"scale": 12,
+			"key": null,
+			"prompt": "Summarize what the HEAD commit does in three bullets."
+		}
+	]
+}
