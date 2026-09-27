@@ -6,6 +6,7 @@ The kernel supplies judge_batch, completion, and wait when their methods are cal
 
 import base64 as _jv_base64
 import collections as _jv_collections
+import concurrent.futures as _jv_futures
 import copy as _jv_copy
 import hashlib as _jv_hashlib
 import importlib as _jv_importlib
@@ -18,12 +19,13 @@ import re as _jv_re
 import shutil as _jv_shutil
 import subprocess as _jv_subprocess
 import sys as _jv_sys
+import tempfile as _jv_tempfile
 import time as _jv_time
 
 
 class jv:
     CAP = 12_000
-    MAX_STATE = 100_000
+    MAX_JEV = 32_000  # Jev tokens; 32.6k-token states judged, 33.1k failed max_tokens_exceeded.
     SEED = 11
     EDGES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.01)
     stats = {"states": {}, "runs": []}
@@ -406,27 +408,74 @@ class jv:
             return any(cls._nonempty(item) for item in value)
         return True  # Zero and false are meaningful evidence, not empty states.
 
+    @staticmethod
+    def jev_tokens(text, *, timeout=20):
+        """Jev token count of `text` via `omp toks <file> --json` (omp >= 18.3.0), or None when
+        omp is missing, times out, or prints nothing parsable. Always pass a timeout: long runs
+        of one repeated character tokenize pathologically slowly."""
+        binary = _jv_shutil.which("omp")
+        if binary is None:
+            return None
+        handle, path = _jv_tempfile.mkstemp(prefix="jevify-toks-", suffix=".txt")
+        try:
+            with _jv_os.fdopen(handle, "w", encoding="utf-8", errors="replace") as output:
+                output.write(text)
+            result = _jv_subprocess.run(
+                [binary, "toks", path, "--json"], stdin=_jv_subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=timeout)
+            if result.returncode:
+                return None
+            for entry in _jv_json.loads(result.stdout)["encodings"]:
+                if entry.get("encoding") == "Jev":
+                    tokens = entry.get("tokens")
+                    return tokens if type(tokens) is int and tokens >= 0 else None
+            return None
+        except (OSError, _jv_subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        finally:
+            try:
+                _jv_os.unlink(path)
+            except OSError:
+                pass
+
     @classmethod
     def states(cls, units, render=None, *, cap=None):
         ceiling = cls.CAP if cap is None else cap
         if ceiling <= 0:
             raise ValueError("cap must be positive")
-        built, dropped, truncated, oversized = {}, 0, 0, []
+        built, dropped, truncated, candidates = {}, 0, 0, {}
         for identifier, unit in units.items():
             value, count = cls._cap(render(unit) if render else unit, ceiling)
             truncated += count
             if cls._nonempty(value):
                 built[identifier] = value
-                if len(_jv_json.dumps(value, ensure_ascii=False, default=str)) > cls.MAX_STATE:
-                    oversized.append(identifier)
+                serialized = _jv_json.dumps(value, ensure_ascii=False, default=str)
+                # Byte-level BPE never yields more tokens than UTF-8 bytes (measured: dense ASCII
+                # 0.76 tok/byte, CJK 0.64, emoji 0.56), so a state within MAX_JEV bytes cannot
+                # exceed MAX_JEV tokens; only larger ones cost an `omp toks` call.
+                if len(serialized.encode("utf-8", "surrogatepass")) > cls.MAX_JEV:
+                    candidates[identifier] = value if isinstance(value, str) else serialized
             else:
                 dropped += 1
+        sizes = {}
+        if candidates:
+            with _jv_futures.ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+                sizes = dict(zip(candidates, pool.map(cls.jev_tokens, candidates.values())))
+        oversize = [identifier for identifier, tokens in sizes.items()
+                    if tokens is not None and tokens > cls.MAX_JEV]
+        unmeasured = [identifier for identifier, tokens in sizes.items() if tokens is None]
         cls.stats["states"] = {"input": len(units), "built": len(built), "dropped": dropped,
-                               "truncated": truncated, "cap": ceiling, "oversized": len(oversized)}
-        print(f"states: {len(built)} built · {dropped} empty dropped · {truncated} truncated (cap {ceiling} chars)")
-        if oversized:
-            print(f"warning: {len(oversized)} states exceed MAX_STATE={cls.MAX_STATE} (fallback risk): "
-                  + ", ".join(map(str, oversized)))
+                               "truncated": truncated, "cap": ceiling, "measured": len(sizes),
+                               "oversize": oversize, "unmeasured": unmeasured}
+        print(f"states: {len(built)} built · {dropped} empty dropped · {truncated} truncated "
+              f"(cap {ceiling} chars) · {len(sizes)} Jev-measured")
+        if oversize:
+            print(f"warning: {len(oversize)} states exceed MAX_JEV={cls.MAX_JEV} Jev tokens; Jev rejects "
+                  "these with max_tokens_exceeded; lower the cap or split: " + ", ".join(map(str, oversize)))
+        if unmeasured:
+            print(f"warning: {len(unmeasured)} states over {cls.MAX_JEV} bytes could not be Jev-measured "
+                  "(`omp toks` missing, timed out or unparsable); check their size: "
+                  + ", ".join(map(str, unmeasured)))
         return built
 
     _DEFINES = _jv_re.compile(
@@ -582,6 +631,11 @@ class jv:
         return found, problem, cost
 
     @staticmethod
+    def _oversize(item):
+        error = str(getattr(item, "error", None) or "")
+        return "max_tokens_exceeded" in error
+
+    @staticmethod
     def _fraction(value):
         probability = float(value)
         if not _jv_math.isfinite(probability) or not 0 <= probability <= 1:
@@ -668,8 +722,10 @@ class jv:
             first, first_problem, first_cost = await cls._collect(
                 states, questions, required, intent=intent, concurrency=concurrency,
                 retries=retries, deadline=deadline)
+            # A state over Jev's context fails identically on every attempt; retry only the rest.
             pending = {key: state for key, state in states.items()
-                       if key not in first or not cls._item_good(first[key], questions, required[key])}
+                       if key not in first or not (cls._item_good(first[key], questions, required[key])
+                                                   or cls._oversize(first[key]))}
             if pending and _jv_time.monotonic() < deadline:
                 retried = set(pending)
                 second, second_problem, second_cost = await cls._collect(
@@ -682,6 +738,8 @@ class jv:
             failure = None if item is not None else issue
             if item is not None and not cls._item_good(item, questions, required[key]):
                 failure = str(getattr(item, "error", None) or "invalid judge answer")
+                if cls._oversize(item):
+                    failure = f"oversize: Jev max_tokens_exceeded; shrink or split this state ({failure[:400]})"
             if slots is None:
                 rows.append(cls._flat_row(key, Q, item, digest, failure=failure))
             else:
@@ -953,7 +1011,9 @@ class jv:
         if state:
             out.append(f"- Last states: {state.get('built', 0)} built, "
                        f"{state.get('dropped', 0)} dropped, "
-                       f"{state.get('truncated', 0)} truncated (cap {state.get('cap')}).")
+                       f"{state.get('truncated', 0)} truncated (cap {state.get('cap')}), "
+                       f"{len(state.get('oversize', []))} over MAX_JEV, "
+                       f"{len(state.get('unmeasured', []))} unmeasured.")
         if cls.stats.get("runs"):
             run = cls.stats["runs"][-1]
             out.append(f"- Last run: {run['units']} units, {run['ok']} ok, "

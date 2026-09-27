@@ -20,7 +20,7 @@ one model's verdicts, not proof: read flagged items before acting on them.
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.1.2'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.1.3'
 ```
 
 Start a new OMP session afterwards. There is nothing else to set up:
@@ -39,13 +39,16 @@ The model loads the helpers itself; by hand, in the Python eval kernel:
 ```
 
 This defines `jv` (extraction from diffs, `rg` and ast-grep; batch runs with a retry;
-error and fallback-model flags; slow-model calibration; dry-run-by-default span deletion).
+Jev-token state sizing; error and non-primary-model flags; slow-model calibration;
+dry-run-by-default span deletion).
 See [`skills/jevify/SKILL.md`](skills/jevify/SKILL.md) for the workflow, the exact `jv` API,
 measured harness facts and recipes.
 
 ## Requirements
 
 - OMP with the eval kernel's `judge_batch`, `judge` and `completion`.
+- `omp toks` (omp ≥ 18.3.0) for sizing large states in Jev tokens; without it `jv.states`
+  warns that they are unmeasured.
 - `rg` and `git` for the diff and search extractors.
 - `uv` (or pip) for `jv.ast_units`, which installs `ast-grep-py` on first use into
   `${XDG_CACHE_HOME:-~/.cache}/jevify/` (the kernel's Python may have no pip).

@@ -346,14 +346,14 @@ class RunAndFlagTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row["why"] == ["error"] for row in flags))
         self.assertTrue(all(batch.closed for batch in batches))
 
-    async def test_fallback_item_model_is_flagged_despite_batch_model(self):
-        states = {"ordinary": "short input", "large": "oversized input"}
+    async def test_non_primary_item_model_is_flagged_despite_batch_model(self):
+        states = {"ordinary": "short input", "rerouted": "other input"}
         questions = {"safe": jv.yes("Is it safe?")}
         batches = []
 
         def judge_batch(payload, submitted_questions, *, concurrency, retries, intent):
             items = {identifier: _item({"safe": {"type": "bool", "bool": 0.1}},
-                                       model="session-default" if identifier == "large" else "jev-primary")
+                                       model="jev-secondary" if identifier == "rerouted" else "jev-primary")
                      for identifier in payload}
             batch = _FakeBatch(payload, items)
             batches.append(batch)
@@ -361,14 +361,125 @@ class RunAndFlagTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.dict(namespace, {"judge_batch": judge_batch}):
             with contextlib.redirect_stdout(io.StringIO()):
-                rows = await jv.run(states, questions, intent="fallback contract")
+                rows = await jv.run(states, questions, intent="non-primary contract")
                 flags = jv.flag(rows, lambda row: False, primary="jev-primary")
         self.assertEqual({row["id"]: row["model"] for row in rows},
-                         {"ordinary": "jev-primary", "large": "session-default"})
-        self.assertEqual([row["id"] for row in flags], ["large"])
-        self.assertEqual(flags[0]["why"], ["fallback:session-default"])
+                         {"ordinary": "jev-primary", "rerouted": "jev-secondary"})
+        self.assertEqual([row["id"] for row in flags], ["rerouted"])
+        self.assertEqual(flags[0]["why"], ["fallback:jev-secondary"])
         self.assertTrue(all("error" not in row for row in rows))
         self.assertTrue(all(batch.closed for batch in batches))
+
+    async def test_oversize_item_is_not_retried_while_other_failures_are(self):
+        states = {"small": "fine", "huge": "x" * 50, "flaky": "transient"}
+        questions = {"safe": jv.yes("Is it safe?")}
+        oversize = ('judgment: every judge candidate failed: typesafe/jev-latest API error (400): '
+                    '{"detail":{"error_type":"max_tokens_exceeded"}}')
+        calls = []
+
+        def judge_batch(payload, submitted_questions, *, concurrency, retries, intent):
+            calls.append((list(payload), intent))
+            retry = intent.endswith("(retry)")
+            items = {}
+            for identifier in payload:
+                if identifier == "huge":
+                    items[identifier] = _item(None, model=None, error=oversize)
+                elif identifier == "flaky" and not retry:
+                    items[identifier] = _item(None, model=None, error="judge timed out")
+                else:
+                    items[identifier] = _item({"safe": {"type": "bool", "bool": 0.2}})
+            return _FakeBatch(payload, items)
+
+        with mock.patch.dict(namespace, {"judge_batch": judge_batch}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                rows = await jv.run(states, questions, intent="oversize contract")
+                flags = jv.flag(rows, primary="jev-primary")
+        self.assertEqual(calls, [(["small", "huge", "flaky"], "oversize contract"),
+                                 (["flaky"], "oversize contract (retry)")])
+        by_id = {row["id"]: row for row in rows}
+        self.assertEqual(by_id["small"]["safe"], 0.2)
+        self.assertEqual(by_id["flaky"]["safe"], 0.2)
+        self.assertTrue(by_id["huge"]["error"].startswith("oversize: "))
+        self.assertIn("max_tokens_exceeded", by_id["huge"]["error"])
+        self.assertNotIn("safe", by_id["huge"])
+        self.assertEqual([row["id"] for row in flags], ["huge"])
+
+    async def test_grouped_oversize_rows_inherit_oversize_error_without_retry(self):
+        units = {"big:1": "a", "big:2": "b"}
+        with contextlib.redirect_stdout(io.StringIO()):
+            grouped, slots = jv.group(units, by=lambda text: "big", k=2)
+        calls = []
+
+        def judge_batch(payload, submitted_questions, *, concurrency, retries, intent):
+            calls.append(intent)
+            return _FakeBatch(payload, {identifier: _item(None, model=None,
+                                                          error="API error (400): max_tokens_exceeded")
+                                        for identifier in payload})
+
+        with mock.patch.dict(namespace, {"judge_batch": judge_batch}):
+            with contextlib.redirect_stdout(io.StringIO()):
+                rows = await jv.run(grouped, {"safe": jv.yes("Is it safe?")},
+                                    intent="grouped oversize", slots=slots)
+        self.assertEqual(calls, ["grouped oversize"])
+        self.assertEqual([row["id"] for row in rows], ["big:1", "big:2"])
+        self.assertTrue(all(row["error"].startswith("oversize: ") and row["group"] == "big#1"
+                            for row in rows))
+
+
+class JevSizingTests(unittest.TestCase):
+    def setUp(self):
+        previous = jv.stats
+        self.addCleanup(setattr, jv, "stats", previous)
+        jv.stats = {"states": {}, "runs": []}
+
+    def test_states_warn_and_record_oversize_and_unmeasured_ids(self):
+        units = {"tiny": "short", "huge": "h" * 40_000, "fits": "f" * 40_000,
+                 "odd": "o" * 40_000, "wide": "\u4e00" * 11_000}
+        tokens = {"h": 40_000, "f": 20_000, "o": None, "\u4e00": 33_000}
+        measured = []
+
+        def fake(text, *, timeout=20):
+            measured.append(text[0])
+            return tokens[text[0]]
+
+        output = io.StringIO()
+        with mock.patch.object(jv, "jev_tokens", fake), contextlib.redirect_stdout(output):
+            built = jv.states(units, cap=50_000)
+        self.assertEqual(list(built), list(units))
+        # 11k CJK chars are 33k UTF-8 bytes, so they are measured despite the low char count.
+        self.assertEqual(sorted(measured), sorted(["h", "f", "o", "\u4e00"]))
+        self.assertEqual(jv.stats["states"]["oversize"], ["huge", "wide"])
+        self.assertEqual(jv.stats["states"]["unmeasured"], ["odd"])
+        lines = output.getvalue().splitlines()
+        over = next(line for line in lines if "max_tokens_exceeded" in line)
+        self.assertIn("huge, wide", over)
+        self.assertNotIn("fits", over)
+        unmeasured = next(line for line in lines if "could not be Jev-measured" in line)
+        self.assertTrue(unmeasured.endswith(": odd"))
+
+    def _fake_omp(self, body):
+        root = _temporary_directory(self)
+        script = root / "omp"
+        script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IXUSR)
+        return str(root)
+
+    def test_jev_tokens_picks_jev_encoding_and_returns_none_without_usable_omp(self):
+        report = ('{"encodings":[{"encoding":"o200k","tokens":7},'
+                  '{"encoding":"Jev","name":"jev","tokens":42}]}')
+        # PATH holds only the fake, so the scripts use builtins and absolute paths.
+        working = self._fake_omp(f"printf '%s\\n' '{report}'\n")
+        slow = self._fake_omp("exec /bin/sleep 5\n")
+        garbled = self._fake_omp("echo not json\n")
+        empty = str(_temporary_directory(self))
+        with mock.patch.dict(os.environ, {"PATH": working}):
+            self.assertEqual(jv.jev_tokens("hello"), 42)
+        with mock.patch.dict(os.environ, {"PATH": empty}):
+            self.assertIsNone(jv.jev_tokens("hello"))
+        with mock.patch.dict(os.environ, {"PATH": slow}):
+            self.assertIsNone(jv.jev_tokens("hello", timeout=0.3))
+        with mock.patch.dict(os.environ, {"PATH": garbled}):
+            self.assertIsNone(jv.jev_tokens("hello"))
 
 
 class QuestionHashTests(unittest.TestCase):

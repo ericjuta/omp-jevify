@@ -1,6 +1,8 @@
 ---
 name: jevify
 description: "Use when asked to go through, check, triage or classify every item in a long list and say which ones stand out: every changed hunk or file in a commit or PR (which aren't explained by its message), every call site after a refactor (which still need changing), every log line, compiler diagnostic, review finding or test. Also on the word jevify. Judges each item with the eval kernel's judge_batch (Jev) against questions frozen up front, with %load-able jv helpers. Not for summaries, counts, single-file reviews or plain edits."
+metadata:
+  version: 0.1.3
 ---
 
 # Jevify
@@ -106,7 +108,8 @@ print(f"naive={len(heads)} mapped={len(heads)-len(uncovered)} units={len(units)}
 ## 3. Build states, spot-check extraction
 
 A state is per-unit text/JSON. `jv.states` caps strings and drops empties (one
-rejects a batch); `jv.MAX_STATE` warns on overflow. Inspect boundaries; use `render`
+rejects a batch); states over `jv.MAX_JEV` Jev tokens (`omp toks`) are warned and
+recorded, since Jev fails them. Inspect boundaries; use `render`
 to attach helpers/siblings when AST call text lacks context (`jv.hunk_states` does
 this for diff hunks).
 
@@ -207,7 +210,7 @@ Group independently judgeable units sharing context. `jv.group` chunks by key in
 ≤8 slots; `jv.run(..., slots=slots)` returns per-unit rows. The header is billed once:
 eight units with a 3k-character header cost 5.4× less; a real 646-line sweep (1.6k
 header, 111 groups averaging 5.8 units) cost 1.4× less and ran 4× faster. Keep groups
-below `jv.MAX_STATE` to avoid silent fallback.
+below `jv.MAX_JEV` tokens; an oversize group fails every slot.
 
 ```python
 gstates, slots = jv.group(units, by=lambda u: u["file"], k=8,
@@ -228,7 +231,7 @@ and calibrate grouped rows separately; never mix grouped and flat rows in one de
 | Member / signature | Contract |
 | --- | --- |
 | `jv.CAP = 12_000` | Maximum characters per string field in a state. |
-| `jv.MAX_STATE = 100_000` | Soft serialized-state warning; oversize may fall back. |
+| `jv.MAX_JEV = 32_000` | Jev-token state ceiling; above it Jev fails `max_tokens_exceeded`. |
 | `jv.SEED = 11` | Default deterministic sampling seed. |
 | `jv.EDGES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.01)` | Default left-closed probability bins. |
 | `jv.stats = {"states": {...}, "runs": [...]}` | Built-state and run statistics. |
@@ -243,13 +246,14 @@ and calibrate grouped rows separately; never mix grouped and flat rows in one de
 | `jv.ast_units(pattern=None, *, lang, rule=None, cwd=".", globs=None)` | Exactly one ast-grep pattern or rule dict (`kind`/`regex`/`has`/`inside`/`any`/`not`); installs via `jv.dep`. |
 | `jv.dep(dist, module=None) -> module` | Import; else `uv pip install --target $XDG_CACHE_HOME/jevify/pyX.Y` (pip fallback), then import. |
 | `jv.line_units(source, *, keep=None, drop=None, normalize=True, examples=3)` | Path/text/lines → grouped normalized signature counts. |
-| `jv.states(units, render=None, *, cap=None) -> {id: state}` | Render str/dict, recursive cap; drop empty; print/record counts. |
+| `jv.states(units, render=None, *, cap=None) -> {id: state}` | Render str/dict, recursive cap; drop empty; Jev-measure states over `MAX_JEV` UTF-8 bytes (8 threads); warn/record `oversize`/`unmeasured` ids and counts. |
+| `jv.jev_tokens(text, *, timeout=20) -> int \| None` | `omp toks --json` Jev count; None if omp missing, timed out or unparsable. |
 | `jv.hunk_states(units, *, siblings=6, users=3, width=700, cap=None)` | Hunk states plus nearest same-file hunks by line distance and hunks using names it defines. |
 | `jv.group(units, *, by, k=8, render=None, shared=None, cap=None) -> (gstates, slots)` | Shared state, ≤k per group; slots map gid to original ids. |
 | `jv.sample(states, n=60, *, seed=None) -> dict` | Sorted ids, seeded random subset. |
-| `await jv.run(states, Q, *, intent, concurrency=32, retries=1, timeout=1800, slots=None) -> list[row]` | Drain/retry once; flat rows, grouped expansion when slots given. |
+| `await jv.run(states, Q, *, intent, concurrency=32, retries=1, timeout=1800, slots=None) -> list[row]` | Drain/retry failures once, except `max_tokens_exceeded` (error `oversize: …`); flat rows, grouped expansion when slots given. |
 | `jv.slot_questions(Q, k) -> dict` | Copy Q into per-slot `qid@sN` questions; absent slots discarded. |
-| `jv.flag(rows, rule=None, *, primary=None) -> list[row]` | Copies with `why`; always errors/fallbacks, plus truthy rule. |
+| `jv.flag(rows, rule=None, *, primary=None) -> list[row]` | Copies with `why`; always errors and `fallback:<model>` (non-modal judge candidate), plus truthy rule. |
 | `jv.show(rows_or_ids, states, *, fields=None, width=1200, limit=30)` | Print verdict fields and state, truncate to width. |
 | `jv.tally(rows, key, *, edges=None) -> dict` | Counts labels or numeric histogram; prints table. |
 | `jv.calibrate(rows, states, Q, *, qid, label, agree=None, per_bin=20, edges=None, model="slow", rubric="", seed=None) -> dict` | Slow choice agreement and threshold estimates. |
@@ -291,7 +295,7 @@ verdicts}` with `verdicts[id]={slow,reason,p}`; slow errors are `ERR`, excluded 
 agreement. `jv.delete_spans` requires inclusive 1-based `{file,line,end_line}`;
 missing ids are reported and dry-run is the default.
 
-## Harness facts (measured 2026-09-23, typesafe/jev-1.13.0)
+## Harness facts (measured 2026-09-27 on omp 18.3.4, typesafe/jev-1.13.0)
 
 - `judge(state, questions)` is a coroutine: `await judge(...)` returns answers;
   `wait([judge(...)])` raises `TypeError`. The built-in jevify notice's `wait(handles)`
@@ -302,11 +306,15 @@ missing ids are reported and dry-run is the default.
   running,model,elapsedS}`; item: `{key,ok,answers,error,model}`. Choice returns
   `{type,choice,confidence,probabilities}`, bool `{type,bool: P(yes)}`, score
   `{type,score,confidence,legend,probabilities}` (weighted level **index**).
-- One empty `""` state rejects the **entire batch at submit**. Jev ceiling ~32k tokens:
-  130k source chars stayed on Jev (0.6 s); 200k/300k source chars and 60k dense chars
-  silently fell back here to the session's default model (3–7 s/unit versus <1 s).
-  Fallback is **unpriced** in batch cost, calibrated differently; status has one model,
-  only per-item `item.model`/row model identifies it. Shrink, re-judge, re-calibrate.
+- One empty `""` state rejects the **entire batch at submit**. Jev state ceiling ≈33k
+  Jev tokens: 32,086/32,595 judged; 33,101/34,107 failed. Chars mislead: prose ≈0.2
+  tok/char (130k ok, 200k failed), dense ≈0.72 (30k ok, 60k failed), CJK/emoji ≈2.
+  Oversize fails **per item**: `ok=False`, `model=None`, `error` ends `API error (400):
+  …max_tokens_exceeded`. Since 18.3.0 judgment falls back only to native candidates,
+  never the chat model; status has one model, so per-item `item.model` names the route.
+- `omp toks <file> --json` counts one input (several paths concatenate); pick
+  `encoding == "Jev"`. ~0.25 s on real text (312 KB diff 0.3 s), but 50k repeats of one
+  character took ~30 s: always set a timeout.
 - State cost ~$0.03–0.05/M tokens (~$0.01/M ordinary chars, ~$0.04/M dense);
   questions are cheap. Can Bölük reported ~$2 for 27k tests; not a guarantee.
 - `completion(prompt, *, model="default"|"smol"|"slow", system=None, schema=None)`
