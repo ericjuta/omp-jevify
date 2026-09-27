@@ -1012,6 +1012,84 @@
      }
     }
    }
+  },
+  "large-skill-v014": {
+   "schema": 1,
+   "results": "large-skill-v014.json",
+   "cases": "cases-large.json",
+   "arm": "skill",
+   "omp": "omp/18.3.5",
+   "thinking": "configured",
+   "model": "default-role",
+   "judge": {
+    "model": "typesafe/jev-1.13.0",
+    "batch_items": 3075,
+    "batch_cost": 0.2656029179999991
+   },
+   "summary": {
+    "overall": {
+     "n": 12,
+     "empty": 0,
+     "recall": 0.904,
+     "precision": 0.954,
+     "false_flags": 1.333,
+     "secs": 82.717,
+     "cost": 0.227,
+     "skill_read": 0.5,
+     "judge_errors": 0
+    },
+    "per_case": {
+     "callsite_sweep_large": {
+      "key": "legacy_callsites",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.985,
+      "false_flags": 1.333,
+      "secs": 33.667,
+      "cost": 0.092,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "findings_triage_large": {
+      "key": "valid_findings",
+      "n": 3,
+      "empty": 0,
+      "recall": 0.617,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 177.867,
+      "cost": 0.492,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     },
+     "hunk_audit_large": {
+      "key": "unexplained_hunks",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 0.831,
+      "false_flags": 4.0,
+      "secs": 56.933,
+      "cost": 0.144,
+      "skill_read": 0.0,
+      "judge_errors": 0
+     },
+     "log_triage_large": {
+      "key": "log_real_bugs",
+      "n": 3,
+      "empty": 0,
+      "recall": 1.0,
+      "precision": 1.0,
+      "false_flags": 0.0,
+      "secs": 62.4,
+      "cost": 0.18,
+      "skill_read": 1.0,
+      "judge_errors": 0
+     }
+    }
+   },
+   "skill": "v0.1.4"
   }
  }
 }
