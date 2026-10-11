@@ -1,0 +1,552 @@
+{
+  "schema": 1,
+  "date": "2026-10-11",
+  "release": "0.3.0",
+  "host": "omp/18.9.1",
+  "evidence_kind": "bounded_live_smoke_not_quality_benchmark",
+  "quality_or_savings_claim": false,
+  "tests": {
+    "command": "/usr/bin/python3 -m unittest discover -s tests",
+    "passed": 281
+  },
+  "source_sha256": {
+    "skills/jevify/jevify.py": "799ff2bbca6c8ab7ba58a60f517d9f8d1027d23e935274a358180344c4527ec1",
+    "evals/run.py": "b996236330032a2a0970a605ecd24786dacdb63b55647cf177966da316909311",
+    "evals/grade.py": "3b4c4ba2a453057c5f6a04920577792a128109e2bca33e8dd3ff06a38db9cd97",
+    "evals/grade_launch.py": "40e851e0013eb49354c256512b040df2963b0810b6c8314827e607ae70aa8a14",
+    "evals/cases-smoke.json": "0b3aaffe47d381dc30143e9d73e9fca901bd5d9416c5e935b03459b22b801848",
+    "evals/extractor-corpus.json": "dea9ad17039e65f41f6b60ef08799c97accd144824b4767f1ae28c8f32eec67f"
+  },
+  "runtime": {
+    "flat": {
+      "flat_complete": true,
+      "reload_same_batches": true,
+      "source_coverage": {
+        "originals": 2,
+        "submitted": 2,
+        "dropped": 0,
+        "excluded": 0,
+        "truncated": 0,
+        "truncation_unknown": 0,
+        "hits": 2,
+        "uncovered_hits": 0,
+        "complete": true
+      },
+      "score_distributions": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "review": {
+        "items": 1,
+        "confirmed": 1,
+        "overturned": 0,
+        "unresolved": 0,
+        "pending": [],
+        "complete": true,
+        "manifest_digest": "1121c95b498930917551c5ea5220260b2d8253a3c4ca7d3a40686e1e20468b84",
+        "policy_digest": "164cfc6ba72f553d9b5043b32fa5ea8f791ea7b09b485c40b6edf272f7d507b5",
+        "policy_intact": true
+      },
+      "provenance_complete": false
+    },
+    "group_exclusions": {
+      "empty": "empty rendered unit"
+    },
+    "pilot": {
+      "schema": 1,
+      "claim": "stability across supplied variants; not correctness and not consensus",
+      "strategy": "flat",
+      "base_rubric_qhash": "75682c0eeeaa",
+      "base_qhash": "4f237cff3310",
+      "variants": [
+        {
+          "id": "base",
+          "qhash": "4f237cff3310",
+          "states_digest": "90aecc9d86ed1d8a",
+          "identity": "13ef4523cc2e79f3",
+          "batch_ids": [
+            "jdgb-15a24f7c64f10de0"
+          ],
+          "cache_counts": {
+            "hit": 0,
+            "partial": 0,
+            "miss": 0,
+            "unknown": 2
+          },
+          "errors": 0,
+          "complete": true
+        },
+        {
+          "id": "perm:color:[\"BLUE\", \"RED\"]",
+          "qhash": "397d291a0c52",
+          "states_digest": "90aecc9d86ed1d8a",
+          "identity": "a8eaa8917bd6b759",
+          "batch_ids": [
+            "jdgb-15a24f7c65b10de1"
+          ],
+          "cache_counts": {
+            "hit": 0,
+            "partial": 0,
+            "miss": 0,
+            "unknown": 2
+          },
+          "errors": 0,
+          "complete": true
+        }
+      ],
+      "units": [
+        {
+          "id": "red",
+          "question": "color",
+          "status": "stable",
+          "answers": {
+            "base": "RED",
+            "perm:color:[\"BLUE\", \"RED\"]": "RED"
+          }
+        },
+        {
+          "id": "red",
+          "question": "safe",
+          "status": "stable",
+          "answers": {
+            "base": "yes",
+            "perm:color:[\"BLUE\", \"RED\"]": "yes"
+          }
+        },
+        {
+          "id": "red",
+          "question": "severity",
+          "status": "stable",
+          "answers": {
+            "base": 0,
+            "perm:color:[\"BLUE\", \"RED\"]": 0
+          }
+        },
+        {
+          "id": "blue",
+          "question": "color",
+          "status": "stable",
+          "answers": {
+            "base": "BLUE",
+            "perm:color:[\"BLUE\", \"RED\"]": "BLUE"
+          }
+        },
+        {
+          "id": "blue",
+          "question": "safe",
+          "status": "stable",
+          "answers": {
+            "base": "no",
+            "perm:color:[\"BLUE\", \"RED\"]": "no"
+          }
+        },
+        {
+          "id": "blue",
+          "question": "severity",
+          "status": "stable",
+          "answers": {
+            "base": 2,
+            "perm:color:[\"BLUE\", \"RED\"]": 2
+          }
+        }
+      ],
+      "counts": {
+        "stable": 6,
+        "disagree": 0,
+        "unresolved": 0
+      },
+      "warnings": [
+        "host effective criteria order and provider/judge cache behaviour are unverified: variant identities record what was submitted, not what the host evaluated"
+      ]
+    }
+  },
+  "kernel_loss_recovery": {
+    "complete": true,
+    "answered": [
+      "a",
+      "b"
+    ],
+    "batch_ids": [
+      "jdgb-15a24f84f2f10de2"
+    ],
+    "new_submissions": 1,
+    "reattachments": 1,
+    "resubmit": {
+      "requested": false,
+      "submitted_ids": [],
+      "skipped": null
+    },
+    "provenance_complete": false
+  },
+  "recipes": {
+    "G. Documentation/contract drift": {
+      "actual": [
+        "supported",
+        "contradicted"
+      ],
+      "expected": [
+        "supported",
+        "contradicted"
+      ],
+      "complete": true
+    },
+    "H. Issue/support intake": {
+      "actual": [
+        "enhancement",
+        "documentation"
+      ],
+      "expected": [
+        "enhancement",
+        "documentation"
+      ],
+      "complete": true
+    },
+    "I. Source/skill candidate relevance": {
+      "actual": [
+        "relevant",
+        "irrelevant"
+      ],
+      "expected": [
+        "relevant",
+        "irrelevant"
+      ],
+      "complete": true
+    }
+  },
+  "calibration": {
+    "bool_sampled": 2,
+    "score_sampled": 2,
+    "cost_complete": false
+  },
+  "extractor": {
+    "records": 18,
+    "facets": {
+      "factual": {
+        "planned": 18,
+        "correct": 13,
+        "accuracy": 0.722,
+        "error_rate": 0.278,
+        "unresolved": 0,
+        "confusion": {
+          "supported": {
+            "supported": 7,
+            "refuted": 0,
+            "underdetermined": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "refuted": {
+            "supported": 0,
+            "refuted": 1,
+            "underdetermined": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "underdetermined": {
+            "supported": 0,
+            "refuted": 0,
+            "underdetermined": 2,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "omitted": {
+            "supported": 4,
+            "refuted": 1,
+            "underdetermined": 0,
+            "omitted": 3,
+            "unresolved": 0
+          }
+        }
+      },
+      "action": {
+        "planned": 18,
+        "correct": 12,
+        "accuracy": 0.667,
+        "error_rate": 0.333,
+        "unresolved": 0,
+        "confusion": {
+          "fix_now": {
+            "fix_now": 2,
+            "defer": 0,
+            "no_action": 0,
+            "investigate": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "defer": {
+            "fix_now": 0,
+            "defer": 1,
+            "no_action": 0,
+            "investigate": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "no_action": {
+            "fix_now": 0,
+            "defer": 0,
+            "no_action": 5,
+            "investigate": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "investigate": {
+            "fix_now": 0,
+            "defer": 0,
+            "no_action": 0,
+            "investigate": 2,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "omitted": {
+            "fix_now": 4,
+            "defer": 1,
+            "no_action": 1,
+            "investigate": 0,
+            "omitted": 2,
+            "unresolved": 0
+          }
+        }
+      },
+      "introduced": {
+        "planned": 18,
+        "correct": 13,
+        "accuracy": 0.722,
+        "error_rate": 0.278,
+        "unresolved": 0,
+        "confusion": {
+          "yes": {
+            "yes": 3,
+            "no": 0,
+            "unknown": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "no": {
+            "yes": 0,
+            "no": 3,
+            "unknown": 0,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "unknown": {
+            "yes": 0,
+            "no": 0,
+            "unknown": 1,
+            "omitted": 0,
+            "unresolved": 0
+          },
+          "omitted": {
+            "yes": 5,
+            "no": 0,
+            "unknown": 0,
+            "omitted": 6,
+            "unresolved": 0
+          }
+        }
+      }
+    },
+    "false_repairs": [
+      {
+        "id": "r02",
+        "gold_action": "omitted",
+        "high_impact": true
+      },
+      {
+        "id": "r03",
+        "gold_action": "omitted",
+        "high_impact": true
+      },
+      {
+        "id": "r04",
+        "gold_action": "omitted",
+        "high_impact": true
+      },
+      {
+        "id": "r06",
+        "gold_action": "omitted",
+        "high_impact": true
+      }
+    ],
+    "high_impact_false_repairs": [
+      "r02",
+      "r03",
+      "r04",
+      "r06"
+    ],
+    "quality_claim": false,
+    "scope": "extractor_agreement_with_adjudicated_labels_not_grading_or_review_quality",
+    "provenance": {
+      "corpus_kind": "source_adjudicated_synthetic",
+      "records_by_kind": {
+        "source_adjudicated_synthetic": 18
+      },
+      "human_adjudicated_records": 0
+    }
+  },
+  "comparison": {
+    "contract_check": {
+      "compatible": true,
+      "one_variable": true,
+      "controlled_differences": [],
+      "treatment_differences": [
+        "strategy"
+      ],
+      "unrecorded": [],
+      "reason": null,
+      "comparison_contract_sha256": {
+        "base": "9017ab8302fbf69f5ef379e1b0a1a8bb89eabf07fd7e1319d3d3b17aafd66db1",
+        "candidate": "2ffef3cbef52e928f6a8c7b5037850d263638340e643a63f24bda391a70b119c"
+      }
+    },
+    "comparisons": {
+      "factual_accuracy": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.083,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.083
+        },
+        "unpaired": []
+      },
+      "action_accuracy": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.083,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.083
+        },
+        "unpaired": []
+      },
+      "introduced_accuracy": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.125,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.125
+        },
+        "unpaired": []
+      },
+      "factual_coverage": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.0,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.0
+        },
+        "unpaired": []
+      },
+      "action_coverage": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.0,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.0
+        },
+        "unpaired": []
+      },
+      "introduced_coverage": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.0,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.0
+        },
+        "unpaired": []
+      },
+      "recall": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.0,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.0
+        },
+        "unpaired": []
+      },
+      "precision": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.0,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.0
+        },
+        "unpaired": []
+      },
+      "unsupported_fix_now_claims": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 1,
+        "mean_delta": 0.0,
+        "interval": null,
+        "cases": {
+          "refund_retry_review": 0.0
+        },
+        "unpaired": []
+      },
+      "control_accuracy": {
+        "method": "paired_case_mean_t_interval",
+        "confidence": 0.95,
+        "n": 2,
+        "mean_delta": 0.0,
+        "interval": {
+          "low": 0.0,
+          "high": 0.0,
+          "df": 1,
+          "t_critical": 12.706
+        },
+        "cases": {
+          "count": 0.0,
+          "rename": 0.0
+        },
+        "unpaired": []
+      }
+    },
+    "recommendation": {
+      "verdict": "inconclusive",
+      "reasons": [
+        "a required metric has no interval"
+      ]
+    },
+    "predeclared_thresholds_matched": true,
+    "post_hoc": false
+  },
+  "launches": {
+    "direct": {
+      "status": "graded",
+      "problems": []
+    },
+    "flat": {
+      "status": "graded",
+      "problems": []
+    }
+  },
+  "limitations": [
+    "One independent graded outcome case; insufficient for an outcome advantage claim.",
+    "Extractor corpus is source-adjudicated synthetic, not human-adjudicated.",
+    "Four high-impact false recommendations require source review; labels do not authorize edits.",
+    "Stock host routing/cache provenance and exhaustive billing remain unknown."
+  ]
+}

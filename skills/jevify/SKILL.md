@@ -2,7 +2,7 @@
 name: jevify
 description: "Assess suitability when explicitly asked to use Jev/jevify, or for repeated independent semantic classifications that deterministic tools cannot decide. Choose a method first; neither item count nor loading this skill requires judgment. Not for summaries, counts or plain edits."
 metadata:
-  version: 0.2.0
+  version: 0.3.0
 ---
 
 # Jevify
@@ -36,6 +36,8 @@ APIs, extraction details or existing recipes; it is not a second mandatory workf
    matching totals alone do not prove coverage. Account for filters, dropped/empty
    states, truncation and oversize inputs. Include relevant helpers, siblings and
    consumers; sanitize logs and never submit credentials or keys.
+   `jv.plan` checks full-request budgets; `jv.pack` groups without silent truncation.
+   Bind source hashes and exclusions with `jv.extraction` before relying on coverage.
 3. Pilot the chosen representation. Read flagged sources and near misses, compare
    verdicts with evidence, and repair misread wording or missing context. Rejudge the
    pilot after changes; abandon Jev if the judgments remain unsuitable.
@@ -49,16 +51,17 @@ APIs, extraction details or existing recipes; it is not a second mandatory workf
    as unresolved, never as safe labels; rerun or inspect their sources.
 6. Persist the frozen questions/hash, source-to-unit mapping, rendered states and
    group slots, batch IDs, returned rows and receipt before discarding evidence.
-   Host batch attachment can recover a surviving batch after a kernel reset, not
-   resume an interrupted `jv.run` coroutine; see the reference for cursor and cleanup
-   limits.
+   Use `bundle_path` for checkpointed `jv.run` recovery and `jv.resume` after a kernel
+   loss. Recovery reconciles saved items and a surviving host batch; stale or missing
+   batches remain unresolved unless resubmission is explicitly requested. This is
+   not exactly-once execution; see the reference for crash and host-session limits.
 
 ## Confirm before action
 
 - Read every flagged source in full, not just a truncated render or score; confirm
   or overturn the claim from reachable behavior and the governing contract.
   Escalate uncertainty, near-threshold ambiguity, errors, explicit fallback rows
-  and unknown provenance. Stock OMP 18.8.7 does not expose the route/cache fields
+  and unknown provenance. Stock OMP through 18.9.1 does not expose the route/cache fields
   needed to resolve provenance; a familiar model label is not a substitute.
 - Calibrate before bulk edits or destructive action; read-only calibration is
   optional. Model agreement is an estimate, not source confirmation or authority.

@@ -24,7 +24,7 @@ permission to edit. It generalises Can Bölük's Jevict
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.2.0'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.3.0'
 ```
 
 The install command pins the published tag. The helper and eval contracts below
@@ -40,7 +40,7 @@ Start a new OMP session afterwards:
   its own instructions for that turn, and the skill is picked up alongside.
 - Or type `/skill:jevify` to inject it directly.
 
-Stock OMP 18.8.7 still injects an item-count-based mandatory `jevify` keyword notice
+Stock OMP 18.8.7 through 18.9.1 still injects an item-count-based mandatory `jevify` keyword notice
 that conflicts with this skill's method-first guidance. Installing the plugin alone
 does not change that host notice. The separate, unreleased local companion host patch
 targets method-first guidance: Jev stays optional, there is no size requirement, and
@@ -52,20 +52,41 @@ The model loads the helpers itself; by hand, in the Python eval kernel:
 %load skill://jevify/jevify.py
 ```
 
-This defines `jv` (extraction from diffs, `rg` and ast-grep; batch handling;
-Jev-token state sizing; error, fallback and unknown-provenance flags; slow-model
-calibration; dry-run-by-default span deletion).
+This defines `jv`: extraction from diffs/search/ASTs, full-request budget planning,
+no-truncation group packing, durable checkpoint/resume bundles, source-bound review
+manifests, ordered rubrics, score distributions, bounded sensitivity pilots, primitive-aware
+calibration, and guarded dry-run-by-default span deletion.
+
+The reference includes executable recipes for documentation/contract drift, issue
+intake, and source/skill relevance alongside the existing migration and review sweeps.
+Each preserves uncertainty and requires source confirmation; none grants edit authority.
 See [`skills/jevify/SKILL.md`](skills/jevify/SKILL.md) for suitability and workflow;
 read [`skills/jevify/reference.md`](skills/jevify/reference.md) on demand for helper APIs
 and recipes.
 
 ### Provenance is not inferred
 
-Stock OMP 18.8.7 exposes only `key`, `answers`, `error` and `model` on judgment items.
+Stock OMP 18.8.7 through 18.9.1 exposes only `key`, `answers`, `error` and `model` on judgment items.
 It does not expose selected/response model, fallback or cache-hit provenance. The helper
 marks missing provenance `provenance_unknown`; a model label or a change in that label
 does not establish fallback or a cache hit. Treat unknown provenance as unresolved,
 not as evidence that the primary model answered.
+
+## Upgrading to 0.3.0
+
+Re-freeze questions for new sweeps: question and choice ordering now contribute to
+rubric identity, so earlier hashes are not interchangeable. Run inputs require
+string unit IDs. Execution artifacts use schema 5; the grader calls justified repair
+recommendations `recommended_defects`, not observed code repairs. Existing saved
+schema-2 helper receipts remain readable; they do not gain missing historical evidence.
+
+Release verification: [retained smoke evidence](evals/results/release-v0.3.0-smoke.json)
+records 281 passing tests, real kernel-loss recovery without resubmission, source-bound
+review, grouped exclusions, calibration, recipes, and isolated grading launches.
+The direct-versus-flat comparison is **inconclusive** (one independent outcome case).
+The 18-record synthetic extractor check produced four high-impact false recommendations;
+source review remains required. These observations establish exercised paths, not a
+quality or savings advantage. Host provenance and exhaustive billing remain unknown.
 
 ## Requirements
 
@@ -91,6 +112,13 @@ availability and requested method are separate controls:
 - `--omp` selects the executable; `--omp-source` records a supplied source checkout's
   identity separately. `--model` and `--thinking` select the subject configuration.
 - `--reps`, `--jobs`, `--max-time`, `--max-calls` and `--retries` bound execution.
+- `--preflight` prints planned exposure without starting sessions. `--authorize-attempts`
+  and `--authorize-concurrency` gate scheduling. `--authorize-questions` stops future
+  attempts when observed questions exhaust the limit **or** question coverage is unknown;
+  stock hosts cannot establish exhaustive question counts, so this guard stops after the
+  first attempt. It is not a hard question or dollar ceiling for in-flight nested calls.
+- `--thresholds` freezes a predeclared correctness/coverage/unsafe-recommendation rule.
+  Independent cases, not repeated fixture items, form paired uncertainty intervals.
 
 Model runs require model access and spend real tokens. Opening the skill is activation
 evidence, not evidence that classification was suitable or that an answer was correct.
@@ -98,19 +126,27 @@ Explicit strategies measure requested-method adherence separately from answer qu
 
 ## Evaluation evidence and cache controls
 
-Execution results use schema 4, distinct from grading and answer-key schemas. They
+Execution results use schema 5, distinct from grading and answer-key schemas. They
 record skill/source, cases and fixture identities; requested configuration; `runs`;
 `summary`; and a `cost_ledger`. Runs retain `attempt_records`, including failed or
 retried attempts, captured answers, execution status and strategy adherence. Completed
 runs are appended to `<out>.partial.jsonl`; raw artifacts are kept beside the output
 unless `--raw-dir` selects another location.
 
+The runner snapshots case and skill bytes before launch and binds the manifest to
+those same inputs. Comparison contracts record host executable identity separately
+from any supplied source checkout, model/thinking, fixture and runner identities,
+cache seed, concurrency, retries and predeclared thresholds. Captured answers remain
+available after process failure, but `answer_status` and `process_status` are separate;
+a crashed or malformed session is not complete. Summaries expose all-scheduled and
+completed cohorts, total retry elapsed time, and deterministic control outcomes.
+
 The runner starts each attempt with a private `--session-dir` and reads persisted
 session JSONL `type: model_usage` entries after the process settles. It does not depend
 on a `model_usage_summary` print event. The retained ledger is an accounting-only
 projection; the transient full session is deleted after collection. Outer assistant
 usage and auxiliary usage remain separate. `snapshot_statuses` and `collection_status`
-describe collection completeness, not overall billing coverage. Stock OMP 18.8.7 does
+describe collection completeness, not overall billing coverage. Stock OMP through 18.9.1 does
 not journal eval `completion` calls in this ledger. Even a complete file containing
 judge rows cannot establish zero completion cost or a complete execution total.
 Completion, auxiliary and total buckets retain `coverage_unknown: true`,
@@ -120,8 +156,8 @@ proof of free execution, and unknown coverage leaves `tokens_complete` false.
 Observed costs remain estimates unless attested otherwise. Unknown costs remain
 unknown, not zero; execution accounting does not include grading overhead.
 
-`judged` can be unknown. `auto_judged` uses only known observations in its denominator;
-`auto_judged_unverified` reports the excluded unknowns. Fully cached judging may produce
+`judged` can be unknown. `auto_judged` reports observed judging over all eligible runs;
+`auto_judged_unverified` reports unknowns included in that denominator. Fully cached judging may produce
 no billed usage rows, so an empty ledger does not prove that no judgment occurred.
 Helper receipts and source markers are not host-attested execution evidence. These
 limits also constrain strategy-adherence claims.
@@ -154,10 +190,10 @@ For an explicitly requested flat-method run against an existing seed:
 python3 evals/run.py --arm skill --strategy jev-flat --cache-mode warm --cache-namespace /path/to/seed.sqlite --jobs 1 --out /tmp/warm-flat.json
 ```
 
-`--compare` prints an informational comparison, not a controlled quality verdict.
-Check source, cases, fixtures, model configuration, cache identities, execution status
-and unknown evidence before interpreting differences. Execution results do not grade
-answer correctness.
+`--compare` reports full contract mismatches and paired case-level execution differences;
+it does not grade answer correctness. `compare_graded(base, candidate)` applies the
+predeclared rule only to compatible measured outcomes with sufficient independent cases.
+Missing evidence or too few cases gives an inconclusive result, not a quality win.
 
 ### Grading and evidence limits
 
@@ -165,9 +201,24 @@ answer correctness.
 separate factual truth, action under the public policy and origin; historical Boolean
 keys remain separate. Grading outputs use schema 2 and reference a shared grading-cost
 ledger, rather than adding grading overhead to each execution arm. Batch costs are
-estimates; grading-session outer cost and total billing remain unmeasured/unknown,
-even for zero-cost or empty batches. Its cache-mode argument records intent; the
-grading session must configure its own cache.
+estimates; total billing remains unknown even for zero-cost or empty batches. Direct
+kernel `cache_mode` records intent only. The isolated launcher configures cold/warm
+cache clones, freezes grader/results/cases/fixture bytes, verifies the two exact eval
+cells and output bindings, and separately collects the settled session usage ledger.
+Per-item route/cache provenance stays unknown when the host does not supply it.
+
+```sh
+python3 evals/grade_launch.py --results /tmp/cand.json --cases evals/cases.json --out /tmp/cand.graded.json --cache-mode cold --concurrency 2
+```
+
+`evals/extractor-corpus.json` is source-adjudicated **synthetic** evidence, not a
+human study. In the eval kernel after loading `grade.py`, run
+`await validate_extractor_host("evals/extractor-corpus.json", concurrency=2)` to
+measure facet confusion, omissions and unsupported recommendations. `calibration_effect`
+compares initial/final decisions against separately supplied source truth; agreement
+with a reference model remains a different metric. Off-inventory invented findings
+remain unaudited unless a separately bound audit is supplied. `recommended_defects`
+counts recommendations, never observed code repairs.
 
 ```python
 %load evals/grade.py
