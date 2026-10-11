@@ -42,6 +42,7 @@
 			"id": "count",
 			"expect": "no_trigger",
 			"key": null,
+			"control": {"kind": "answer_integer"},
 			"prompt": "How many call sites of fetch_rate are there in billing/? Just the number."
 		},
 		{
@@ -54,6 +55,7 @@
 			"id": "rename",
 			"expect": "no_trigger",
 			"key": null,
+			"control": {"kind": "repo_rename", "old": "RETRY_LIMIT", "new": "MAX_RETRIES", "file": "settings.py"},
 			"prompt": "Rename RETRY_LIMIT to MAX_RETRIES in settings.py and update any references."
 		},
 		{

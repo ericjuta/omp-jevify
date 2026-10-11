@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "provenance": {
+    "kind": "source_adjudicated_synthetic",
+    "human_adjudicated": false,
+    "adjudicator": "authoring-agent",
+    "adjudicated_at": "2026-10-11",
+    "basis": "Synthetic answer texts written by the corpus author. Item descriptions are copied from evals/refund_retry_fixture.py CLAIMS; gold labels record only the assertions each answer text makes, checked against the rubric. Not human-adjudicated and not observed model output."
+  },
+  "notes": "Exercises extraction on exact ids, group mentions, contradictions, omissions, and factual versus action distinctions. Gold describes what the answer asserts, not the claim's truth.",
+  "records": [
+    {
+      "id": "r01", "claim": "C01", "category": "exact_id",
+      "item": "review claim C01 (redelivery): On redelivery with a persisted provider id, HEAD sends another create under a new idempotency key.",
+      "answer": "C01 is supported. It should be fixed now, before release. HEAD introduced it: the stored-id branch sends a second create under a new key.",
+      "gold": {"factual": "supported", "action": "fix_now", "introduced": "yes"},
+      "gold_basis": "Names C01: 'is supported', 'fixed now, before release', 'HEAD introduced it'.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r02", "claim": "C02", "category": "exact_id",
+      "item": "review claim C02 (redelivery): The bundled R-1842 redelivery scenario predicts two settled provider ids for one refund.",
+      "answer": "C01 is supported and must be fixed now; HEAD introduced it.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "Only C01 is named. A related claim is not a mention of C02.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r03", "claim": "C07", "category": "exact_id",
+      "item": "review claim C07 (lost_ack): The recovered R-1904 job remains in an ambiguous terminal state.",
+      "answer": "C99 is a fix-now defect and HEAD introduced it.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "Only off-inventory C99 is named; C07 is not mentioned.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r04", "claim": "C01", "category": "exact_id",
+      "item": "review claim C01 (redelivery): On redelivery with a persisted provider id, HEAD sends another create under a new idempotency key.",
+      "answer": "C1 is supported and fix_now; HEAD introduced it.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "'C1' is not the exact id C01; exact ids are required.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r05", "claim": "C02", "category": "group_mention",
+      "item": "review claim C02 (redelivery): The bundled R-1842 redelivery scenario predicts two settled provider ids for one refund.",
+      "answer": "C01, C02 and C04 are one defect. All three are supported, must be fixed now, and HEAD introduced them.",
+      "gold": {"factual": "supported", "action": "fix_now", "introduced": "yes"},
+      "gold_basis": "C02 is explicitly listed in the group; the group asserts the same three facets for each member.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r06", "claim": "C06", "category": "group_mention",
+      "item": "review claim C06 (lost_ack): R-1904's recovery is a second settlement that must be reversed.",
+      "answer": "C01, C02 and C04 are one defect. All three are supported, must be fixed now, and HEAD introduced them.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "C06 is not in the explicit group list.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r07", "claim": "C01", "category": "contradiction",
+      "item": "review claim C01 (redelivery): On redelivery with a persisted provider id, HEAD sends another create under a new idempotency key.",
+      "answer": "C01 is supported and should be fixed now; HEAD introduced it. Reconsidering, C01 is refuted and needs no action.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "yes"},
+      "gold_basis": "Factual and action assertions contradict each other, so both are omitted. The origin is asserted once.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r08", "claim": "C17", "category": "contradiction",
+      "item": "review claim C17 (reset_retry): HEAD's enabled reset rollout reaches a new connection-reset retry from the worker entry point.",
+      "answer": "C17 is supported and needs no action. HEAD did not introduce this path. HEAD introduced this path when the flag was enabled.",
+      "gold": {"factual": "supported", "action": "no_action", "introduced": "omitted"},
+      "gold_basis": "Origin is asserted as both 'no' and 'yes', so the origin facet is omitted; factual and action are single assertions.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r09", "claim": "C05", "category": "omission",
+      "item": "review claim C05 (lost_ack): R-1904's lost-acknowledgement scenario emits a warning and recovers with only one provider settlement.",
+      "answer": "C05: no action needed.",
+      "gold": {"factual": "omitted", "action": "no_action", "introduced": "omitted"},
+      "gold_basis": "Action is asserted; factual status and origin are not stated.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r10", "claim": "C09", "category": "omission",
+      "item": "review claim C09 (conversion): The conversion books a float product rounded to 435 cents for the 5.50 x 0.79 sample.",
+      "answer": "Nothing in this answer addresses the refund conversion.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "The answer makes no assertion about C09.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r11", "claim": "C05", "category": "omission",
+      "item": "review claim C05 (lost_ack): R-1904's lost-acknowledgement scenario emits a warning and recovers with only one provider settlement.",
+      "answer": "C05 is supported.",
+      "gold": {"factual": "supported", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "Only factual status is asserted.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r12", "claim": "C23", "category": "omission",
+      "item": "review claim C23 (timeout_sample): HEAD's timeout reduction caused the sampled operational timeout.",
+      "answer": "The refund adapter's timeout is a separate topic; the redelivery defect is the release blocker.",
+      "gold": {"factual": "omitted", "action": "omitted", "introduced": "omitted"},
+      "gold_basis": "No claim id is named; the release-blocker statement concerns a different claim.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r13", "claim": "C16", "category": "factual_vs_action",
+      "item": "review claim C16 (legacy_flag): The ignored flag is factual technical debt that can wait for adapter cleanup.",
+      "answer": "C16 is factually true: the argument is accepted but unused. It is nonblocking debt to defer, not a release blocker. It predates HEAD.",
+      "gold": {"factual": "supported", "action": "defer", "introduced": "no"},
+      "gold_basis": "Accepted as true ('factually true'), deferred ('debt to defer'), and pre-existing ('predates HEAD').",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r14", "claim": "C03", "category": "factual_vs_action",
+      "item": "review claim C03 (redelivery): A timeout warning by itself proves that both provider calls moved money.",
+      "answer": "C03 is false: a warning alone does not prove two movements of money. No action is warranted. HEAD did not introduce this.",
+      "gold": {"factual": "refuted", "action": "no_action", "introduced": "no"},
+      "gold_basis": "Explicitly false ('is false'), no action ('No action is warranted'), and not introduced ('did not introduce').",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r15", "claim": "C17", "category": "factual_vs_action",
+      "item": "review claim C17 (reset_retry): HEAD's enabled reset rollout reaches a new connection-reset retry from the worker entry point.",
+      "answer": "C17 is not wrong, but it is not worth fixing; leave it alone.",
+      "gold": {"factual": "supported", "action": "no_action", "introduced": "omitted"},
+      "gold_basis": "'Not wrong' accepts the proposition; 'leave it alone' is no_action; origin is not stated. 'Not worth fixing' alone does not refute the fact.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r16", "claim": "C22", "category": "factual_vs_action",
+      "item": "review claim C22 (timeout_sample): The fictional timeout sample is insufficient to decide whether HEAD's five-second timeout introduced a regression.",
+      "answer": "C22 is accurate about the five-second timeout. Investigate before changing it. Whether HEAD introduced it cannot be established from this sample.",
+      "gold": {"factual": "supported", "action": "investigate", "introduced": "unknown"},
+      "gold_basis": "Accepted as accurate, investigate-before-action, and origin explicitly cannot be established.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r17", "claim": "C17", "category": "factual_vs_action",
+      "item": "review claim C17 (reset_retry): HEAD's enabled reset rollout reaches a new connection-reset retry from the worker entry point.",
+      "answer": "C17 might need a fix. Investigate whether the reset path is reachable before deciding.",
+      "gold": {"factual": "underdetermined", "action": "investigate", "introduced": "omitted"},
+      "gold_basis": "Reachability is explicitly uncertain; the action is investigate, not fix_now; no origin statement. A fix_now extraction here would be a false repair.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    },
+    {
+      "id": "r18", "claim": "C08", "category": "factual_vs_action",
+      "item": "review claim C08 (lost_ack): Expected recovery makes the warning severity too high for operators.",
+      "answer": "C08 is unproven either way, so take no action on severity. HEAD did not introduce the warning.",
+      "gold": {"factual": "underdetermined", "action": "no_action", "introduced": "no"},
+      "gold_basis": "'Unproven either way' is explicit factual uncertainty; 'take no action' is no_action; 'did not introduce' is an origin conclusion.",
+      "provenance": {"kind": "source_adjudicated_synthetic", "human_adjudicated": false, "adjudicator": "authoring-agent", "adjudicated_at": "2026-10-11", "basis": "answer text of this record and the rubric"}
+    }
+  ]
+}

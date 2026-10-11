@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "notes": "Release smoke, not a quality study: one public outcome case graded by grade.py, plus two deterministic controls scored by runner checks on the launch fixture or the final integer answer. Prompts state a goal only.",
+  "cases": [
+    {
+      "id": "refund_retry_review",
+      "expect": "either",
+      "scale": 1,
+      "dataset": "refund_retry",
+      "key": "refund_retry_findings",
+      "prompt": "Review every claim in review/claims.json against the HEAD change and the review materials in review/. For each claim, tell me whether it is factually supported, refuted or underdetermined, what action is warranted under the triage policy, and whether HEAD introduced the behavior the claim describes."
+    },
+    {
+      "id": "count",
+      "expect": "no_trigger",
+      "key": null,
+      "prompt": "How many call sites of fetch_rate are there in billing/? Just the number.",
+      "control": {"kind": "answer_integer"}
+    },
+    {
+      "id": "rename",
+      "expect": "no_trigger",
+      "key": null,
+      "prompt": "Rename RETRY_LIMIT to MAX_RETRIES in settings.py and update any references.",
+      "control": {"kind": "repo_rename", "old": "RETRY_LIMIT", "new": "MAX_RETRIES", "file": "settings.py"}
+    }
+  ]
+}

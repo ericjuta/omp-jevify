@@ -3,9 +3,12 @@
 Load in OMP's Python eval kernel and call ``await grade(paths, cases_path)``. Schema2
 keys independently describe factual truth, action under the public policy, and origin.
 Legacy Boolean keys are explicitly historical schema1, never converted into factual
-truth. Omissions and extraction failures stay in planned denominators. Repair metrics
-count canonical defects, not repeated claims. Execution costs remain in their source
-records; one companion ledger owns this grading operation's overhead for all files.
+truth. Omissions and extraction failures stay in planned denominators. Repair fields are
+recommendations derived from asserted facets, not observed code repairs. Off-inventory
+claims are unknown unless an explicit audit is supplied. Per-item route metadata is kept
+only when the host streams it, and missing values stay unknown. Execution costs remain in
+their source records; one companion ledger owns this grading operation's overhead.
+Inputs are read once as bytes; results bind to those bytes even if files change later.
 """
 
 import hashlib
@@ -13,8 +16,10 @@ import importlib.util
 import json
 import math
 import os
+import re
 import tempfile
 import time
+import types
 import uuid
 from pathlib import Path
 
@@ -22,6 +27,13 @@ _GRADE_DIR = Path(__file__).resolve().parent
 SCORING_REVISION = "independent-facets-fixed-denominators-v1"
 HISTORICAL_REVISION = "historical-boolean-fixed-denominators-v2"
 HISTORICAL_LABELS = ("flagged", "cleared", "not_mentioned")
+CURRENT_EXECUTION_SCHEMAS = (3, 4, 5)
+FIXTURE_SOURCES = ("fixture.py", "refund_retry_fixture.py")
+ROUTE_FIELDS = ("selected_model", "primary_model", "response_model", "fallback", "cache", "questions", "cached_questions")
+EXTRACTION_CATEGORIES = ("exact_id", "group_mention", "contradiction", "omission", "factual_vs_action")
+PROVENANCE_KINDS = ("source_adjudicated_synthetic", "external_human", "external_model", "external_source")
+# A fix_now extraction against these gold actions would recommend work the answer did not warrant.
+HIGH_IMPACT_GOLD_ACTIONS = ("no_action", "defer", "investigate", "omitted")
 FACET_LABELS = {
     "factual": ("supported", "refuted", "underdetermined", "omitted"),
     "action": ("fix_now", "defer", "no_action", "investigate", "omitted"),
@@ -92,8 +104,40 @@ def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _bytes_digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
 def _file_digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return _bytes_digest(Path(path).read_bytes())
+
+
+def _changed_since_snapshot(digests):
+    """Paths whose bytes differ now from the snapshot. Grading still used the snapshot bytes."""
+    changed = []
+    for path, digest in digests.items():
+        try:
+            current = _file_digest(path)
+        except OSError:
+            current = None
+        if current != digest:
+            changed.append(str(path))
+    return sorted(changed)
+
+
+def _validate_provenance(provenance, where):
+    """Every adjudication label states its kind; only external_human may claim human adjudication."""
+    if not isinstance(provenance, dict) or provenance.get("kind") not in PROVENANCE_KINDS:
+        raise ValueError(f"{where} needs a provenance kind in {PROVENANCE_KINDS}")
+    human = provenance.get("human_adjudicated")
+    if type(human) is not bool or human != (provenance["kind"] == "external_human"):
+        raise ValueError(f"{where}: human_adjudicated must be true only for external_human")
+    if provenance["kind"].startswith("external"):
+        for field in ("adjudicator", "adjudicated_at"):
+            if not isinstance(provenance.get(field), str) or not provenance[field]:
+                raise ValueError(f"{where}: external adjudication needs {field}")
+    if not isinstance(provenance.get("basis"), str) or not provenance["basis"]:
+        raise ValueError(f"{where}: provenance needs a basis")
 
 
 def _key_schema(key):
@@ -146,11 +190,12 @@ def score_items(truth, verdicts, errors=None):
 
 
 def score_facets(items, verdicts, errors=None):
-    """Score independent facets; only evidence-backed definite repairs earn defect credit.
+    """Score independent facets; only evidence-backed definite repairs earn recommendation credit.
 
     Repeated claims about one defect count once. If any selected repair claim for that
-    defect is false, unresolved, or misattributed, the candidate is not a justified repair.
-    Unselected duplicates cannot increase recall or conceal a spurious repair selection.
+    defect is false, unresolved, or misattributed, the candidate is not a justified
+    recommendation. Unselected duplicates cannot increase recall or conceal a spurious
+    selection. These are scores of asserted facets; no code repair was observed.
     """
     errors = errors or {}
     facets = {}
@@ -193,15 +238,15 @@ def score_facets(items, verdicts, errors=None):
         candidates.setdefault(defect, []).append(warranted)
         if not warranted:
             unsupported.append(item["id"])
-    repaired = {defect for (kind, defect), claims in candidates.items() if kind == "defect" and all(claims)}
-    tp, fp, fn = len(repaired), len(candidates) - len(repaired), len(expected_defects - repaired)
+    recommended = {defect for (kind, defect), claims in candidates.items() if kind == "defect" and all(claims)}
+    tp, fp, fn = len(recommended), len(candidates) - len(recommended), len(expected_defects - recommended)
     unresolved_items = sum(any(value not in FACET_LABELS[facet] for facet, value in decision.items())
                            for decision in normalized.values())
     repair = {"tp": tp, "fp": fp, "fn": fn, "recall": tp / len(expected_defects) if expected_defects else None,
               "precision": tp / len(candidates) if candidates else None, "false_flags": fp,
               "planned_defects": len(expected_defects), "predicted_defects": len(candidates),
-              "repaired_defects": sorted(repaired), "missed_defects": sorted(expected_defects - repaired),
-              "unsupported_fix_now_claims": unsupported}
+              "recommended_defects": sorted(recommended), "unrecommended_defects": sorted(expected_defects - recommended),
+              "unsupported_fix_now_claims": unsupported, "basis": "asserted_facets_not_observed_repairs"}
     return {"planned_items": len(items), "facets": facets,
             **{f"{facet}_{metric}": values[metric] for facet, values in facets.items() for metric in ("accuracy", "coverage")},
             **{field: repair[field] for field in ("tp", "fp", "fn", "recall", "precision", "false_flags")},
@@ -239,6 +284,29 @@ def summarize_graded(runs):
     return {"n": len(runs), "empty": sum(row["empty"] for row in runs), "by_key_schema": by_schema}
 
 
+def summarize_controls(rows):
+    """Deterministic runner controls. An unscored (None) attempt stays in the denominator."""
+    def block(selected):
+        n = len(selected)
+        correct = sum(row["control_correct"] is True for row in selected)
+        return {"n": n, "scored": sum(row["control_correct"] is not None for row in selected), "correct": correct,
+                "control_accuracy": round(correct / n, 3) if n else None}
+    return {"overall": block(rows), "final_attempt": block([row for row in rows if row["final_attempt"]]),
+            "per_case": {case: block([row for row in rows if row["case"] == case])
+                         for case in sorted({row["case"] for row in rows})}}
+
+
+def summarize_off_inventory(rows):
+    statuses = {}
+    for row in rows:
+        status = row["off_inventory"]["status"]
+        statuses[status] = statuses.get(status, 0) + 1
+    audited = [row["off_inventory"] for row in rows if row["off_inventory"]["audited"]]
+    return {"status_counts": dict(sorted(statuses.items())), "audited_answers": len(audited),
+            "false_claims": sum(item["false_claims"] for item in audited),
+            "unknown_claims": sum(item["unknown_claims"] for item in audited)}
+
+
 def _load_runs(path, *, captured_bytes=None):
     """Parse JSON or partial JSONL, optionally from an already captured byte snapshot."""
     text = (Path(path).read_bytes() if captured_bytes is None else captured_bytes).decode("utf-8")
@@ -252,11 +320,12 @@ def _load_runs(path, *, captured_bytes=None):
     return meta, runs
 
 
-def _fixture_keys(specs):
-    """Build each (dataset, scale) once; keep private truth out of extraction states."""
-    spec = importlib.util.spec_from_file_location("jevify_eval_fixture", _GRADE_DIR / "fixture.py")
-    fixture = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fixture)
+def _fixture_keys(specs, sources=None):
+    """Build each (dataset, scale) once from the fixture bytes this grading pass snapshotted."""
+    sources = sources or {name: (_GRADE_DIR / name).read_bytes() for name in FIXTURE_SOURCES}
+    fixture = types.ModuleType("jevify_eval_fixture")
+    fixture.__file__ = str(_GRADE_DIR / "fixture.py")
+    exec(compile(sources["fixture.py"], fixture.__file__, "exec"), fixture.__dict__)
     bundles = {}
     with tempfile.TemporaryDirectory(prefix="jevify-grade-") as tmp:
         for n, (dataset, scale) in enumerate(sorted(set(specs))):
@@ -271,14 +340,52 @@ def _fixture_keys(specs):
     return bundles
 
 
+def _route_unknown(fields):
+    """Mirror the helper's rule: any missing or inconsistent route field keeps provenance unknown."""
+    selected, primary, fallback = fields["selected_model"], fields["primary_model"], fields["fallback"]
+    if (not isinstance(selected, str) or not selected or not isinstance(primary, str) or not primary
+            or type(fallback) is not bool or fallback != (selected != primary)):
+        return True
+    total, cached = fields["questions"], fields["cached_questions"]
+    return (fields["cache"] not in ("hit", "partial", "miss") or type(total) is not int or total < 1
+            or type(cached) is not int or not 0 <= cached <= total)
+
+
+def _item_provenance(item, batch_id):
+    fields = {field: getattr(item, field, None) for field in ROUTE_FIELDS}
+    return {"batch_id": batch_id, **fields, "provenance_unknown": _route_unknown(fields), "source": "host_item"}
+
+
+def _unknown_provenance(source, batch_id=None):
+    return {"batch_id": batch_id, **{field: None for field in ROUTE_FIELDS}, "provenance_unknown": True, "source": source}
+
+
+async def _drain_completions(batch, seconds, found):
+    """Advance one batch. Keep host item objects when the handle streams them; True if it did."""
+    stream = getattr(batch, "drain_iter", None)
+    if callable(stream):
+        iterator = stream(seconds)
+        if hasattr(iterator, "__aiter__"):
+            async for identifier, item in iterator:
+                found[identifier] = item
+            return True
+    await batch.drain(seconds)
+    return False
+
+
 async def _judge(states, questions, timeout, concurrency):
-    """Return per-facet extraction and failures, plus one explicitly estimated cost entry."""
+    """Return per-facet extraction, failures, one explicit cost estimate, and per-state route provenance.
+
+    Route metadata comes only from host item objects. Display model names never stand in
+    for routing proof; absent fields stay unknown.
+    """
     judge_batch = globals().get("judge_batch")
     if judge_batch is None:
         raise RuntimeError("grade() needs judge_batch: %load this file in OMP's Python eval kernel")
     batch = None
     problem = f"no extraction within {timeout}s"
     answers, failures, status = {}, {}, {}
+    found, streamed = {}, False
     cleanup_errors = []
     try:
         if timeout > 0:
@@ -286,7 +393,8 @@ async def _judge(states, questions, timeout, concurrency):
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 try:
-                    await batch.drain(min(60.0, max(0.01, deadline - time.monotonic())))
+                    if await _drain_completions(batch, min(60.0, max(0.01, deadline - time.monotonic())), found):
+                        streamed = True
                 except Exception as error:
                     problem = f"extraction batch failed ({type(error).__name__})"
                     break
@@ -320,11 +428,19 @@ async def _judge(states, questions, timeout, concurrency):
     cost = status.get("cost")
     if type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0:
         cost = None
-    record = {"id": str(getattr(batch, "id", None) or status.get("id") or uuid.uuid4().hex),
+    batch_id = str(getattr(batch, "id", None) or status.get("id") or uuid.uuid4().hex)
+    missing_source = "not_submitted" if batch is None else ("host_item_missing" if streamed else "host_item_stream_unavailable")
+    provenance = {state: _item_provenance(found[state], batch_id) if state in found
+                  else _unknown_provenance(missing_source, batch_id) for state in states}
+    known = sum(not item["provenance_unknown"] for item in provenance.values())
+    record = {"id": batch_id,
               "kind": "judgment_batch" if batch is not None else "unsubmitted_extraction", "items": len(states), "model": status.get("model"),
               "cost_usd": cost, "cost_basis": "batch_status_estimate", "billing_complete": False,
               "cleanup_errors": cleanup_errors,
-              "cache": {field: status[field] for field in ("cache", "questions", "cachedQuestions") if field in status}}
+              "cache": {field: status[field] for field in ("cache", "questions", "cachedQuestions") if field in status},
+              "provenance_summary": {"items": len(provenance), "known": known, "unknown": len(provenance) - known,
+                                     "item_stream": streamed},
+              "provenance": provenance}
     return labels, errors, record
 
 
@@ -333,7 +449,8 @@ def _captured_answers(run):
     attempts = run.get("attempt_records")
     if attempts is None:
         return [{"answer": run.get("answer") or "", "attempt_id": None, "answer_index": 0,
-                 "final_attempt": True, "execution_status": "historical_unrecorded"}]
+                 "final_attempt": True, "execution_status": "historical_unrecorded", "answer_status": None,
+                 "process_status": None, "process_problems": None}]
     if not attempts:
         raise ValueError("retained-attempt execution has no retained attempts")
     captured = []
@@ -351,8 +468,31 @@ def _captured_answers(run):
                 raise ValueError("captured assistant answer must be text")
             captured.append({"answer": text, "attempt_id": attempt["attempt_id"], "answer_index": index,
                              "final_attempt": attempt["attempt_id"] == run["final_attempt_id"],
-                             "execution_status": attempt.get("execution_status")})
+                             "execution_status": attempt.get("execution_status"),
+                             "answer_status": attempt.get("answer_status"),
+                             "process_status": attempt.get("process_status"),
+                             "process_problems": attempt.get("process_problems")})
     return captured
+
+
+def _control_rows(run, source):
+    """One deterministic control row per attempt; historical runs carry no control, so unscored."""
+    attempts = run.get("attempt_records")
+    if attempts is None:
+        return [{"source": source, "case": run["case"], "rep": run.get("rep"), "attempt_id": None,
+                 "final_attempt": True, "execution_status": None, "control_kind": None,
+                 "control_correct": None, "control_evidence_class": None}]
+    rows = []
+    for attempt in attempts:
+        control = attempt.get("control")
+        control = control if isinstance(control, dict) else {}
+        correct = control.get("correct")
+        rows.append({"source": source, "case": run["case"], "rep": run.get("rep"), "attempt_id": attempt.get("attempt_id"),
+                     "final_attempt": attempt.get("attempt_id") == run.get("final_attempt_id"),
+                     "execution_status": attempt.get("execution_status"), "control_kind": control.get("kind"),
+                     "control_correct": correct if type(correct) is bool else None,
+                     "control_evidence_class": control.get("evidence_class")})
+    return rows
 
 
 def _execution_record(meta, runs):
@@ -362,10 +502,13 @@ def _execution_record(meta, runs):
                  "metadata": {field: value for field, value in meta.items() if field not in ("cost_ledger", "summary", "grading_cost")},
                  "runs": [{"run_index": n, "case": run["case"], "rep": run.get("rep"),
                            "final_attempt_id": run.get("final_attempt_id"),
-                           "attempts": [{field: attempt.get(field) for field in ("attempt_id", "execution_status", "strategy_adherence", "secs", "raw_path")}
-                                        for attempt in run.get("attempt_records", [])]}
+                           "total_secs": run.get("total_secs"), "final_attempt_secs": run.get("final_attempt_secs"),
+                           "attempts": [{field: attempt.get(field) for field in (
+                               "attempt_id", "execution_status", "answer_status", "process_status", "process_problems",
+                               "strategy_adherence", "secs", "raw_path")}
+                               for attempt in run.get("attempt_records", [])]}
                           for n, run in enumerate(runs)],
-                 "historical_outer_only": meta.get("schema") not in (3, 4) and not retained_attempts}
+                 "historical_outer_only": meta.get("schema") not in CURRENT_EXECUTION_SCHEMAS and not retained_attempts}
     if "cost_ledger" not in meta:
         # Partial files lack the full-file deduplicated ledger; keep one original run ledger.
         execution["run_cost_ledgers"] = {str(n): run.get("cost_ledger", run.get("accounting")) for n, run in enumerate(runs)}
@@ -385,15 +528,361 @@ def _print_table(result, target):
     print(f"  grading overhead: {result['grading']['ledger_path']} (shared {result['grading']['ledger_id']})")
 
 
+def _load_off_inventory(data):
+    """An explicit audit of claims outside the key inventory, keyed by answer digest."""
+    document = json.loads(data.decode("utf-8"))
+    if not isinstance(document, dict) or document.get("schema") != 1:
+        raise ValueError("off-inventory audit schema must be 1")
+    _validate_provenance(document.get("provenance"), "off-inventory audit")
+    answers = document.get("answers")
+    if not isinstance(answers, dict):
+        raise ValueError("off-inventory audit needs an answers object")
+    for digest, entry in answers.items():
+        claims = entry.get("claims") if isinstance(entry, dict) else None
+        if not isinstance(claims, list):
+            raise ValueError(f"off-inventory audit {digest[:12]} needs a claims list")
+        for claim in claims:
+            if (not isinstance(claim, dict) or claim.get("verdict") not in ("true", "false", "unknown")
+                    or not isinstance(claim.get("text"), str) or not claim["text"]):
+                raise ValueError(f"off-inventory audit {digest[:12]} has an invalid claim")
+    return document
+
+
+def off_inventory_boundary(audit, answer_sha256):
+    """Claims outside the key are unknown by default; they are neither credited nor penalized."""
+    unknown = {"audited": False, "claims": None, "false_claims": None, "unknown_claims": None, "audit_provenance": None}
+    if audit is None:
+        return {**unknown, "status": "unknown",
+                "reason": "no off-inventory audit supplied; off-inventory claims are not scored"}
+    entry = audit["answers"].get(answer_sha256)
+    if entry is None:
+        return {**unknown, "status": "unaudited", "reason": "answer absent from the off-inventory audit"}
+    verdicts = [claim["verdict"] for claim in entry["claims"]]
+    return {"status": "audited", "audited": True, "claims": len(verdicts), "false_claims": verdicts.count("false"),
+            "unknown_claims": verdicts.count("unknown"), "audit_provenance": audit["provenance"],
+            "reason": "auditor-listed claims only; completeness of claim extraction is not established"}
+
+
+def _validate_corpus(corpus):
+    if not isinstance(corpus, dict) or corpus.get("schema") != 1:
+        raise ValueError("extractor corpus schema must be 1")
+    _validate_provenance(corpus.get("provenance"), "extractor corpus")
+    records = corpus.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("extractor corpus needs records")
+    ids = [record.get("id") for record in records if isinstance(record, dict)]
+    if len(ids) != len(records) or any(not isinstance(rid, str) or not rid for rid in ids) or len(set(ids)) != len(ids):
+        raise ValueError("extractor corpus records need unique string ids")
+    for record in records:
+        rid = record["id"]
+        if not isinstance(record.get("item"), str) or not record["item"]:
+            raise ValueError(f"{rid}: item is required")
+        if not isinstance(record.get("answer"), str) or not record["answer"].strip():
+            raise ValueError(f"{rid}: answer is required")
+        claim = record.get("claim")
+        if not isinstance(claim, str) or not re.search(rf"(?<!\w){re.escape(claim)}(?!\w)", record["item"]):
+            raise ValueError(f"{rid}: claim must be the claim id the item states")
+        if record.get("category") not in EXTRACTION_CATEGORIES:
+            raise ValueError(f"{rid}: category must be one of {EXTRACTION_CATEGORIES}")
+        if not isinstance(record.get("gold_basis"), str) or not record["gold_basis"]:
+            raise ValueError(f"{rid}: gold_basis must quote the adjudicated assertion")
+        gold = record.get("gold")
+        if not isinstance(gold, dict) or set(gold) != set(FACET_LABELS):
+            raise ValueError(f"{rid}: gold needs exactly the facets {tuple(FACET_LABELS)}")
+        for facet, labels in FACET_LABELS.items():
+            if gold[facet] not in labels:
+                raise ValueError(f"{rid}: invalid gold {facet} label {gold[facet]!r}")
+        _validate_provenance(record.get("provenance"), f"record {rid}")
+    return records
+
+
+def _provenance_counts(corpus, records):
+    counts = {}
+    for record in records:
+        counts[record["provenance"]["kind"]] = counts.get(record["provenance"]["kind"], 0) + 1
+    return {"corpus_kind": corpus["provenance"]["kind"], "records_by_kind": dict(sorted(counts.items())),
+            "human_adjudicated_records": counts.get("external_human", 0)}
+
+
+def validate_extractor(corpus, extractions):
+    """Score extracted facets against adjudicated gold labels: confusion, errors and denominators.
+
+    Gold labels describe the assertions in each answer text, not the claim's truth or the
+    grading key. A missing or invalid extraction is an unresolved error in every denominator.
+    Agreement here is not grading or review quality.
+    """
+    records = _validate_corpus(corpus)
+    predicted = {}
+    for record in records:
+        raw = extractions.get(record["id"]) or {}
+        predicted[record["id"]] = {facet: raw.get(facet) if raw.get(facet) in labels else "unresolved"
+                                   for facet, labels in FACET_LABELS.items()}
+    report = {"schema": 1, "records": len(records), "cells": len(records) * len(FACET_LABELS),
+              "facets": {}, "categories": {}, "false_repairs": [], "missed_repairs": [], "unresolved_records": [],
+              "provenance": _provenance_counts(corpus, records), "quality_claim": False,
+              "scope": "extractor_agreement_with_adjudicated_labels_not_grading_or_review_quality"}
+    for facet, labels in FACET_LABELS.items():
+        confusion = {gold: {pred: 0 for pred in (*labels, "unresolved")} for gold in labels}
+        correct = 0
+        for record in records:
+            gold, pred = record["gold"][facet], predicted[record["id"]][facet]
+            confusion[gold][pred] += 1
+            correct += gold == pred
+        report["facets"][facet] = {"planned": len(records), "correct": correct,
+                                   "accuracy": round(correct / len(records), 3),
+                                   "error_rate": round(1 - correct / len(records), 3),
+                                   "unresolved": sum(predicted[record["id"]][facet] == "unresolved" for record in records),
+                                   "confusion": confusion}
+    for category in EXTRACTION_CATEGORIES:
+        selected = [record for record in records if record["category"] == category]
+        if selected:
+            report["categories"][category] = {"records": len(selected), **{
+                facet: {"correct": sum(predicted[r["id"]][facet] == r["gold"][facet] for r in selected),
+                        "accuracy": round(sum(predicted[r["id"]][facet] == r["gold"][facet] for r in selected) / len(selected), 3)}
+                for facet in FACET_LABELS}}
+    for record in records:
+        rid, gold, pred = record["id"], record["gold"]["action"], predicted[record["id"]]["action"]
+        if pred == "fix_now" and gold != "fix_now":
+            report["false_repairs"].append({"id": rid, "gold_action": gold, "high_impact": gold in HIGH_IMPACT_GOLD_ACTIONS})
+        if gold == "fix_now" and pred != "fix_now":
+            report["missed_repairs"].append({"id": rid, "predicted_action": pred})
+        if "unresolved" in predicted[rid].values():
+            report["unresolved_records"].append(rid)
+    report["high_impact_false_repairs"] = [item["id"] for item in report["false_repairs"] if item["high_impact"]]
+    return report
+
+
+async def validate_extractor_host(corpus_path, *, timeout=1800, concurrency=4, out_path=None):
+    """Extract every corpus answer with the host judge, then score against the adjudicated labels."""
+    snapshot = Path(corpus_path).read_bytes()
+    corpus = json.loads(snapshot.decode("utf-8"))
+    records = _validate_corpus(corpus)
+    # Keys are unique record ids; each state carries the claim id production grading sends.
+    states = {record["id"]: {"answer": record["answer"].strip(), "id": record["claim"], "item": record["item"]}
+              for record in records}
+    labels, failures, batch = await _judge(states, FACET_QUESTIONS, timeout, concurrency)
+    provenance = batch.pop("provenance", {})
+    report = validate_extractor(corpus, {rid: labels.get(rid, {}) for rid in states})
+    report["extraction"] = {"corpus": str(corpus_path), "corpus_sha256": _bytes_digest(snapshot), "batch": batch,
+                            "failed_states": sorted(failures), "provenance": {rid: provenance.get(rid) for rid in states}}
+    if out_path is not None:
+        with Path(out_path).open("x") as handle:
+            handle.write(json.dumps(report, indent=1) + "\n")
+    return report
+
+
+CALIBRATION_ACTIONS = FACET_LABELS["action"]
+
+
+def calibration_effect(records):
+    """Effect of calibration on source-adjudicated truth, with reference agreement kept separate.
+
+    Each record: id, stratum, source_truth (action or None), initial and final decisions
+    (action), reference (action or None: a slower model or human, used for agreement only),
+    overhead_usd (number or None), manual_resolution (bool). Records without source truth
+    are unscored and excluded from effects, but still count toward overhead. Results describe
+    this sample only; no population estimate is made without sampling weights.
+    """
+    ids = [record.get("id") for record in records]
+    if any(not isinstance(rid, str) or not rid for rid in ids) or len(set(ids)) != len(ids):
+        raise ValueError("calibration records need unique string ids")
+    for record in records:
+        for field in ("initial", "final"):
+            if record.get(field) not in CALIBRATION_ACTIONS:
+                raise ValueError(f"{record['id']}: {field} must be an action in {CALIBRATION_ACTIONS}")
+        for field in ("source_truth", "reference"):
+            if record.get(field) is not None and record[field] not in CALIBRATION_ACTIONS:
+                raise ValueError(f"{record['id']}: {field} must be an action or null")
+        if type(record.get("manual_resolution")) is not bool:
+            raise ValueError(f"{record['id']}: manual_resolution must be boolean")
+    scored = [record for record in records if record["source_truth"] is not None]
+
+    def unsupported(decision, truth):
+        return decision == "fix_now" and truth != "fix_now"
+
+    def missed(decision, truth):
+        return truth == "fix_now" and decision != "fix_now"
+
+    referenced = [record for record in scored if record["reference"] is not None]
+    overhead = [record["overhead_usd"] for record in records]
+    strata = {}
+    for record in scored:
+        bucket = strata.setdefault(str(record["stratum"]), {"records": 0, "unsupported_before": 0, "unsupported_after": 0,
+                                                             "missed_before": 0, "missed_after": 0})
+        bucket["records"] += 1
+        bucket["unsupported_before"] += unsupported(record["initial"], record["source_truth"])
+        bucket["unsupported_after"] += unsupported(record["final"], record["source_truth"])
+        bucket["missed_before"] += missed(record["initial"], record["source_truth"])
+        bucket["missed_after"] += missed(record["final"], record["source_truth"])
+    before = {"unsupported": sum(unsupported(r["initial"], r["source_truth"]) for r in scored),
+              "missed": sum(missed(r["initial"], r["source_truth"]) for r in scored)}
+    after = {"unsupported": sum(unsupported(r["final"], r["source_truth"]) for r in scored),
+             "missed": sum(missed(r["final"], r["source_truth"]) for r in scored)}
+    return {
+        "schema": 1, "sample": {"records": len(records), "scored": len(scored), "unscored": len(records) - len(scored),
+                                "strata": dict(sorted(strata.items()))},
+        "effect_on_source_truth": {
+            "unsupported_immediate_repairs": {"before": before["unsupported"], "after": after["unsupported"],
+                                              "delta": after["unsupported"] - before["unsupported"]},
+            "missed_defects": {"before": before["missed"], "after": after["missed"],
+                               "delta": after["missed"] - before["missed"]},
+            "changed_decisions": sum(r["initial"] != r["final"] for r in scored),
+            "manual_resolutions": sum(r["manual_resolution"] for r in records)},
+        "agreement_with_reference": {
+            "referenced": len(referenced),
+            "before": sum(r["initial"] == r["reference"] for r in referenced),
+            "after": sum(r["final"] == r["reference"] for r in referenced),
+            "agreement_not_correctness": True},
+        "overhead_usd": {"total": None if any(o is None for o in overhead) else round(sum(overhead), 6),
+                         "records_with_unknown_overhead": sum(o is None for o in overhead)},
+        "scope": "sample_only_no_population_estimate_without_sampling_weights",
+    }
+
+
+def _as_graded(value):
+    if isinstance(value, (str, os.PathLike)):
+        return json.loads(Path(value).read_text())
+    if isinstance(value, dict):
+        return value
+    raise TypeError("expected a graded result path or dict")
+
+
+_COMPARED_OUTCOME_FIELDS = ("factual_accuracy", "action_accuracy", "introduced_accuracy", "factual_coverage",
+                            "action_coverage", "introduced_coverage", "recall", "precision")
+UNSAFE_FIELD = "unsupported_fix_now_claims"
+
+
+def _per_case_metrics(result):
+    """Case-level values of final-attempt outcomes. Repetitions and clones are not independent units."""
+    per_case = {}
+    for row in result["runs"]:
+        if not row["final_attempt"] or row["key_schema"] != 2:
+            continue
+        values = {field: row.get(field) for field in _COMPARED_OUTCOME_FIELDS}
+        values[UNSAFE_FIELD] = float(len(row["repair"]["unsupported_fix_now_claims"]))
+        per_case.setdefault(row["case"], []).append(values)
+    metrics = {field: {case: _mean(v[field] for v in values) for case, values in per_case.items()}
+               for field in (*_COMPARED_OUTCOME_FIELDS, UNSAFE_FIELD)}
+    controls = {}
+    for row in result.get("control_runs", []):
+        # Unscored controls have no correctness value; they are reported in summarize_controls.
+        if row["final_attempt"] and row["control_correct"] is not None:
+            controls.setdefault(row["case"], []).append(float(row["control_correct"]))
+    metrics["control_accuracy"] = {case: _mean(values) for case, values in controls.items()}
+    return metrics
+
+
+def _identity(result):
+    return {"results": result.get("results"), "input_sha256": result.get("input_sha256"),
+            "grader_source_sha256": (result.get("identities") or {}).get("source_sha256"),
+            "arm": result.get("arm"), "strategy": result.get("strategy"), "omp": result.get("omp")}
+
+
+def _run_module():
+    """Shared execution-side statistics. Loaded from the sibling file so one implementation serves both."""
+    spec = importlib.util.spec_from_file_location("jevify_eval_run_shared", _GRADE_DIR / "run.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+GRADER_IDENTITY_FIELDS = ("source_sha256", "cases_sha256", "extraction_rubric_sha256", "fixture_sources",
+                          "scoring_revision", "historical_revision")
+
+
+def _key_identities(result):
+    """Per case, the key identity and binding its rows record (rows of one case share them)."""
+    keys = {}
+    for row in result.get("runs", []):
+        keys.setdefault(row["case"], {"identity": row.get("key_identity"), "binding": row.get("key_binding")})
+    return keys
+
+
+def _identity_check(base, candidate):
+    """Differing recorded identities are controlled differences; unrecorded ones prevent any claim."""
+    differences, unrecorded = [], []
+    base_ids, candidate_ids = base.get("identities") or {}, candidate.get("identities") or {}
+    for field in GRADER_IDENTITY_FIELDS:
+        left, right = base_ids.get(field), candidate_ids.get(field)
+        if left is None or right is None:
+            unrecorded.append(f"grader:{field}")
+        elif left != right:
+            differences.append(f"grader:{field}")
+    base_keys, candidate_keys = _key_identities(base), _key_identities(candidate)
+    for case in sorted(set(base_keys) & set(candidate_keys)):
+        left, right = base_keys[case], candidate_keys[case]
+        if left["identity"] is None or right["identity"] is None:
+            unrecorded.append(f"key:{case}")
+        elif left["identity"] != right["identity"]:
+            differences.append(f"key:{case}")
+        statuses = [(side["binding"] or {}).get("status") for side in (left, right)]
+        if "changed" in statuses:
+            differences.append(f"key:{case}:binding")
+        elif any(status != "matched" for status in statuses):
+            unrecorded.append(f"key:{case}:binding")
+    return differences, unrecorded
+
+
+def _contract_check(run, base, candidate):
+    """Compatible needs one recorded contract that differs only in treatment, identical grader and keys.
+
+    The contract SHA is display only: a one-variable comparison always changes it.
+    """
+    base_contract, candidate_contract = base.get("comparison_contract"), candidate.get("comparison_contract")
+    if not isinstance(base_contract, dict) or not isinstance(candidate_contract, dict):
+        check = {"compatible": False, "one_variable": False, "controlled_differences": [],
+                 "treatment_differences": [], "unrecorded": ["comparison_contract"],
+                 "reason": "comparison_contract unrecorded in one or both results"}
+    else:
+        check = dict(run.contract_differences(base_contract, candidate_contract))
+    identity_differences, identity_unrecorded = _identity_check(base, candidate)
+    reasons = [check["reason"]] if check.get("reason") else []
+    if identity_unrecorded:
+        reasons.append("identity unrecorded: " + ", ".join(identity_unrecorded))
+    check["controlled_differences"] = [*check["controlled_differences"], *identity_differences]
+    check["unrecorded"] = [*check["unrecorded"], *identity_unrecorded]
+    check["reason"] = "; ".join(reasons) or None
+    check["compatible"] = bool(check["compatible"]) and not check["controlled_differences"] and not check["unrecorded"]
+    check["comparison_contract_sha256"] = {"base": base.get("comparison_contract_sha256"),
+                                           "candidate": candidate.get("comparison_contract_sha256")}
+    return check
+
+
+def compare_graded(base, candidate):
+    """Identity-checked, paired comparison of two graded results.
+
+    Thresholds come only from the base run's predeclared manifest, and only when both runs
+    carry the same predeclared digest. Otherwise the shared statistics withhold the
+    recommendation, and the comparison is reported as post hoc.
+    """
+    base, candidate = _as_graded(base), _as_graded(candidate)
+    run = _run_module()
+    contract = _contract_check(run, base, candidate)
+    base_metrics, candidate_metrics = _per_case_metrics(base), _per_case_metrics(candidate)
+    base_pre = (base.get("run_manifest") or {}).get("predeclared_thresholds")
+    candidate_pre = (candidate.get("run_manifest") or {}).get("predeclared_thresholds")
+    matched = base_pre is not None and candidate_pre is not None and base_pre.get("sha256") == candidate_pre.get("sha256")
+    predeclared = base_pre if matched else None
+    # Thresholds are the base's predeclared object; a digest mismatch withholds via predeclared=None.
+    thresholds = base_pre.get("thresholds") if base_pre is not None else None
+    confidence = thresholds.get("confidence", 0.95) if thresholds else 0.95
+    comparisons = {field: run.paired_case_comparison(base_metrics[field], candidate_metrics[field], confidence=confidence)
+                   for field in base_metrics}
+    recommendation = run.threshold_recommendation(comparisons, thresholds, contract, predeclared)
+    return {"schema": 1, "base": _identity(base), "candidate": _identity(candidate), "contract_check": contract,
+            "comparisons": comparisons, "recommendation": recommendation,
+            "predeclared_thresholds_matched": matched, "post_hoc": predeclared is None}
+
+
 async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concurrency=4,
-                cache_mode="uncontrolled", ledger_path=None):
+                cache_mode="uncontrolled", ledger_path=None, launch=None, off_inventory_audit=None):
     """Grade all captured answers, including failed/method-bypassed attempts, with fixed keys.
 
-    ``cache_mode`` records requested conditions, not unsupported host cache control. The
-    grading session must configure its own cache before loading this module. Batch status
-    costs are estimates; grading-session outer overhead remains unmeasured here. Each output
-    references one companion ledger. No independently incurred per-file grading cost exists.
-    Result and cases hashes describe the same captured bytes used for parsing. Historical
+    ``cache_mode`` records requested conditions. ``launch`` is the JSON descriptor that
+    evals/grade_launch.py wrote into the grading cell; it is recorded verbatim, not verified
+    here. Batch status costs are estimates; grading-session outer overhead remains unmeasured
+    here. Each output references one companion ledger. Results, cases, fixture sources and an
+    optional off-inventory audit are read once as bytes and bound by digest. Historical
     captures without a selected key identity remain unrecorded, not evidence of a match.
     """
     single = isinstance(results_path, (str, os.PathLike))
@@ -406,29 +895,42 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
         raise ValueError("timeout and concurrency must be positive")
     if cache_mode not in ("cold", "warm", "uncontrolled"):
         raise ValueError("cache_mode must be cold, warm, or uncontrolled")
+    if launch is not None:
+        json.dumps(launch, sort_keys=True, allow_nan=False)  # rejects non-JSON descriptors before any work
+    audit_path = Path(off_inventory_audit) if off_inventory_audit is not None else None
     targets = [Path(out_path) if out_path is not None else path.with_suffix(".graded.json") for path in paths]
     if len({path.resolve() for path in targets}) != len(targets) or any(target.resolve() in {path.resolve() for path in paths} for target in targets):
         raise ValueError("grading output would overwrite an input or another output")
     ledger_id = uuid.uuid4().hex
     ledger_target = Path(ledger_path) if ledger_path is not None else targets[0].parent / f"grading-{ledger_id}.ledger.json"
-    if ledger_target.resolve() in {path.resolve() for path in [*paths, *targets, Path(cases_path)]}:
+    protected = [*paths, *targets, Path(cases_path), *([audit_path] if audit_path is not None else [])]
+    if ledger_target.resolve() in {path.resolve() for path in protected}:
         raise ValueError("grading ledger would overwrite source or results")
     if ledger_target.exists():
         raise ValueError("grading ledger already exists; choose a fresh companion path")
     input_snapshots = {path: path.read_bytes() for path in paths}
     cases_snapshot = Path(cases_path).read_bytes()
-    input_hashes = {str(path): hashlib.sha256(snapshot).hexdigest() for path, snapshot in input_snapshots.items()}
-    grader_identity = {"source_sha256": _file_digest(__file__), "cases_sha256": hashlib.sha256(cases_snapshot).hexdigest(),
+    audit_snapshot = audit_path.read_bytes() if audit_path is not None else None
+    fixture_snapshots = {name: (_GRADE_DIR / name).read_bytes() for name in FIXTURE_SOURCES}
+    snapshot_digests = {**{path: _bytes_digest(data) for path, data in input_snapshots.items()},
+                        Path(cases_path): _bytes_digest(cases_snapshot),
+                        **{_GRADE_DIR / name: _bytes_digest(data) for name, data in fixture_snapshots.items()}}
+    if audit_path is not None:
+        snapshot_digests[audit_path] = _bytes_digest(audit_snapshot)
+    input_hashes = {str(path): _bytes_digest(snapshot) for path, snapshot in input_snapshots.items()}
+    off_inventory = _load_off_inventory(audit_snapshot) if audit_snapshot is not None else None
+    grader_identity = {"source_sha256": _file_digest(__file__), "cases_sha256": _bytes_digest(cases_snapshot),
                        "extraction_rubric_sha256": {"1": _digest(HISTORICAL_QUESTIONS), "2": _digest(FACET_QUESTIONS)},
-                       "fixture_sources": {name: _file_digest(_GRADE_DIR / name) for name in ("fixture.py", "refund_retry_fixture.py")
-                                           if (_GRADE_DIR / name).exists()}, "scoring_revision": SCORING_REVISION,
-                       "historical_revision": HISTORICAL_REVISION}
+                       "fixture_sources": {name: _bytes_digest(data) for name, data in fixture_snapshots.items()},
+                       "off_inventory_audit_sha256": None if audit_snapshot is None else _bytes_digest(audit_snapshot),
+                       "scoring_revision": SCORING_REVISION, "historical_revision": HISTORICAL_REVISION}
     cases_doc = json.loads(cases_snapshot)
     cases = {case["id"]: case for case in cases_doc["cases"]}
     if len(cases) != len(cases_doc["cases"]):
         raise ValueError("duplicate case ids")
-    bundles = _fixture_keys((case.get("dataset", "billing"), case.get("scale", 1))
-                            for case in cases.values() if case.get("key") is not None)
+    fixture_specs = [(case.get("dataset", "billing"), case.get("scale", 1))
+                     for case in cases.values() if case.get("key") is not None]
+    bundles = _fixture_keys(fixture_specs, sources=fixture_snapshots)
     identities, frozen_keys = {}, {}
     for cid, case in cases.items():
         if case.get("key") is None:
@@ -452,7 +954,7 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
         missing = sorted({row["case"] for row in runs} - set(cases))
         if missing:
             raise ValueError(f"{path}: cases absent from {cases_path}: {missing}")
-        if meta.get("schema") in (3, 4) and any(run.get("attempt_records") is None for run in runs):
+        if meta.get("schema") in CURRENT_EXECUTION_SCHEMAS and any(run.get("attempt_records") is None for run in runs):
             raise ValueError("current execution omitted retained attempts")
         key_bindings = {}
         for cid in {run["case"] for run in runs} & set(identities):
@@ -471,9 +973,11 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
                 key_bindings[cid]["status"] = "changed"
             if key_bindings[cid]["status"] == "changed":
                 print(f"  {path}: {cid} is regraded under changed fixed keys/evidence; identities are retained")
-        planned = []
+        planned, controls = [], []
         for run_index, run in enumerate(runs):
             case = cases[run["case"]]
+            if case.get("control") is not None:
+                controls.extend(_control_rows(run, str(path)))
             if case.get("key") is None:
                 continue
             key = bundles[(case.get("dataset", "billing"), case.get("scale", 1))]["keys"][case["key"]]
@@ -483,11 +987,13 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
                 row = {"case": run["case"], "rep": run.get("rep"), "key": case["key"], "key_schema": schema,
                        "empty": not answer, "final_attempt": capture["final_attempt"],
                        "execution_status": capture["execution_status"],
+                       "answer_status": capture["answer_status"], "process_status": capture["process_status"],
+                       "process_problems": capture["process_problems"],
                        "execution_ref": {"run_index": run_index, "attempt_id": capture["attempt_id"],
                                          "answer_index": capture["answer_index"]},
                        "answer_sha256": _digest(answer), "key_identity": identities[run["case"]],
                        "key_binding": key_bindings[run["case"]],
-                       "verdicts": {}, "errors": {}, "extraction_inputs": {}}
+                       "verdicts": {}, "errors": {}, "extraction_inputs": {}, "extraction_provenance": {}}
                 for item in key["items"]:
                     if not answer:
                         row["verdicts"][item["id"]] = {facet: "omitted" for facet in FACET_LABELS} if schema == 2 else "not_mentioned"
@@ -500,38 +1006,51 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
                     slots[schema][sid] = (row, item["id"])
                     row["extraction_inputs"][item["id"]] = _digest(state)
                 planned.append((row, key))
-        files.append((path, meta, runs, planned))
+        files.append((path, meta, runs, planned, controls))
     batch_records = []
+    provenance_by_state = {}
     deadline = time.monotonic() + timeout
     for schema in (1, 2):
         if not states[schema]:
             continue
         questions = FACET_QUESTIONS if schema == 2 else HISTORICAL_QUESTIONS
         labels, failures, batch = await _judge(states[schema], questions, max(0, deadline - time.monotonic()), concurrency)
+        for sid, item in batch.pop("provenance", {}).items():
+            provenance_by_state[(schema, sid)] = item
         batch_records.append(batch)
         for sid, (row, iid) in slots[schema].items():
             extracted = labels.get(sid, {})
             row["verdicts"][iid] = extracted if schema == 2 else extracted.get("verdict")
+            row["extraction_provenance"][iid] = provenance_by_state.get((schema, sid), _unknown_provenance("not_submitted"))
             if sid in failures:
                 row["errors"][iid] = failures[sid]
+    changed = _changed_since_snapshot(snapshot_digests)
+    if changed:
+        print(f"  inputs changed during grading; results remain bound to snapshot bytes: {changed}")
     # Even an empty grading plan has unmeasured session overhead; absence is not free billing.
     ledger = {"schema": 1, "id": ledger_id, "scope": "shared_grading_overhead", "inputs": [str(path) for path in paths],
               "input_sha256": input_hashes, "identities": grader_identity,
               "key_identities": identities, "frozen_keys": frozen_keys,
-              "extraction_rubrics": {"1": HISTORICAL_QUESTIONS, "2": FACET_QUESTIONS}, "batches": batch_records,
+              "extraction_rubrics": {"1": HISTORICAL_QUESTIONS, "2": FACET_QUESTIONS},
+              "run_config": {"timeout_seconds": timeout, "concurrency": concurrency, "cache_mode": cache_mode},
+              "inputs_changed_during_grading": changed,
+              "off_inventory_audit": None if audit_path is None else {"path": str(audit_path), "sha256": grader_identity["off_inventory_audit_sha256"]},
+              "batches": batch_records,
               "batch_cost_estimate_usd": sum(record["cost_usd"] for record in batch_records) if all(record["cost_usd"] is not None for record in batch_records) else None,
               "session_outer_cost_usd": None, "total_cost_usd": None, "billing_complete": False,
-              "cache": {"requested": cache_mode, "effective": "unverified", "observed": [record["cache"] for record in batch_records if record.get("cache")]}}
+              "cache": {"requested": cache_mode, "effective": "unverified", "launch": launch,
+                        "observed": [record["cache"] for record in batch_records if record.get("cache")]}}
     with ledger_target.open("x") as handle:
         handle.write(json.dumps(ledger, indent=1) + "\n")
     results = []
-    for (path, meta, execution_runs, planned), target in zip(files, targets):
+    for (path, meta, execution_runs, planned, control_rows), target in zip(files, targets):
         graded = []
         for row, key in planned:
             score = score_facets(key["items"], row["verdicts"], row["errors"]) if row["key_schema"] == 2 else score_items(
                 {item["id"]: item["flag"] for item in key["items"]}, row["verdicts"], row["errors"])
             row.update(score)
             row["judge_errors"] = len(row["errors"])
+            row["off_inventory"] = off_inventory_boundary(off_inventory, row["answer_sha256"])
             graded.append(row)
         per_case = {}
         for row in graded:
@@ -539,6 +1058,9 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
         result = {"schema": 2, "results": str(path), "input_sha256": ledger["input_sha256"][str(path)],
                   "cases": str(cases_path), "identities": grader_identity,
                   **{field: meta.get(field) for field in ("arm", "strategy", "omp", "thinking", "model", "model_requested", "thinking_requested")},
+                  "comparison_contract": meta.get("comparison_contract"),
+                  "comparison_contract_sha256": meta.get("comparison_contract_sha256"),
+                  "run_manifest": meta.get("run_manifest"),
                   "execution": _execution_record(meta, execution_runs),
                   "grading": {"ledger_id": ledger_id, "ledger_path": str(ledger_target)},
                   "summary": {"overall": summarize_graded(graded),
@@ -546,7 +1068,9 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
                               "per_case": {case: summarize_graded(rows) for case, rows in sorted(per_case.items())},
                               "final_per_case": {case: summarize_graded([row for row in rows if row["final_attempt"]])
                                                  for case, rows in sorted(per_case.items())}},
-                  "runs": graded}
+                  "controls": summarize_controls(control_rows),
+                  "off_inventory": summarize_off_inventory(graded),
+                  "runs": graded, "control_runs": control_rows}
         target.write_text(json.dumps(result, indent=1) + "\n")
         _print_table(result, target)
         results.append(result)

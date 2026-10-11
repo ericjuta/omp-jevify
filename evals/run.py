@@ -27,6 +27,14 @@ never proves cache hits. Uncontrolled mode leaves the host cache untouched.
   python3 evals/run.py --strategy jev-flat --cache-mode cold --out /tmp/flat.json
   python3 evals/run.py --arm none --strategy auto --out /tmp/noskill.json
 
+Authorized envelope (optional; each limit is checked before an attempt starts):
+  python3 evals/run.py --cases evals/cases-smoke.json --preflight --authorize-attempts 3 --out /tmp/x.json
+  --authorize-attempts N      attempt sessions, including retries, that may start
+  --authorize-questions N     stop scheduling once observed known judgment questions reach N
+  --authorize-concurrency N   simultaneous attempts (the smaller of N and --jobs)
+  --thresholds FILE           predeclared decision rule; its canonical digest binds the run
+No dollar envelope exists: dollar totals stay unknown or catalog-estimated, with no hard guarantee.
+
 Needs a working `omp` with model access. Results vary run to run; use --reps >= 3.
 Outer assistant usage and persisted session model_usage entries are kept separately.
 An absent or incomplete session ledger, or an unknown-cost attempt, leaves the monetary total
@@ -38,7 +46,10 @@ import argparse
 import concurrent.futures as cf
 import hashlib
 import json
+import math
 import os
+import platform
+import re
 import shutil
 import signal
 import sqlite3
@@ -78,7 +89,25 @@ TOKEN_FIELDS = {
     "cache_read": ("cache_read", "cacheRead", "cached_tokens"),
     "cache_write": ("cache_write", "cacheWrite"),
 }
-RESULT_SCHEMA = 4
+RESULT_SCHEMA = 5
+CONTROL_KINDS = ("answer_integer", "repo_rename")
+CONFIDENCE = 0.95
+# Two-sided 95% Student t critical values by degrees of freedom; beyond 30 the normal value 1.96 is used.
+T_CRITICAL_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306,
+                 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120,
+                 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064,
+                 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
+RUNNER_MODULES = ("run.py", "fixture.py", "refund_retry_fixture.py")
+METHOD_SETTINGS = {"helper_concurrency": HELPER_CONCURRENCY, "backend_retries": BACKEND_RETRIES,
+                   "shared_deadline_seconds": SHARED_DEADLINE_SECONDS, "grouped_k": GROUPED_K,
+                   "evidence_class": "prescribed_method_settings_not_execution_proof"}
+# Fields a one-variable comparison must hold fixed; treatment fields are the only ones allowed to differ.
+CONTRACT_CONTROLLED = ("runner", "source", "executable", "host", "model_requested", "thinking_requested",
+                       "cases", "fixtures", "cache", "method_settings", "limits", "session_flags", "tools",
+                       "envelope", "predeclared_thresholds")
+# skill folds the arm and its bundle into one field, so skill vs none is a single treatment difference.
+CONTRACT_TREATMENT = ("skill", "strategy")
+THRESHOLD_ROLES = ("correctness", "coverage", "unsafe")
 
 
 # OMP filters raw skill names before namespacing, then final names afterward. These patterns
@@ -175,9 +204,24 @@ def digest_json(value):
     return digest_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 
 
+def rubric_ordered_identity(questions):
+    """jv._ordered_identity: question order and criterion order are identity; fields within a question are not."""
+    identity = []
+    for qid, question in questions.items():
+        record = []
+        for field in sorted(question):
+            value = question[field]
+            if field == "criteria" and isinstance(value, dict):
+                value = [[label, description] for label, description in value.items()]
+            record.append([field, value])
+        identity.append([qid, record])
+    return identity
+
+
 def helper_qhash(questions):
-    """The question hash jv.run writes into its receipt (jv.qhash)."""
-    return hashlib.sha256(json.dumps(questions, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    """The ordered question hash jv.run writes into its receipt (jv.qhash, ordered=True)."""
+    text = json.dumps(rubric_ordered_identity(questions), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def string_ids(value):
@@ -245,6 +289,51 @@ def skill_identity(skills_dir, arm):
         "complete": arm != "skill" or all(name in files for name in REQUIRED_SKILL_FILES),
         "notes": ["File hashes identify the tested bundle; a mixed bundle is not a historical release."],
     }
+
+
+def runner_identity():
+    """Identity of the code that builds fixtures and launches attempts; not subject behavior."""
+    modules = {name: file_identity(HERE / name)["sha256"] for name in RUNNER_MODULES}
+    return {"modules": modules, "sha256": digest_json(modules), "python": sys.version.split()[0]}
+
+
+def retain_content(directory, name, data):
+    """Write launch bytes once; a later mismatch means the retained snapshot was altered."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+    if target.exists():
+        if target.read_bytes() != data:
+            raise RuntimeError(f"retained snapshot {target} differs from the launch bytes")
+        return target
+    target.write_bytes(data)
+    return target
+
+
+def retain_skill_snapshot(skills_dir, directory):
+    """Copy the tested bundle's bytes once; every attempt loads this tree, never the live source."""
+    root = Path(skills_dir) / "jevify"
+    contents = {path.relative_to(root).as_posix(): path.read_bytes()
+                for path in sorted(root.rglob("*")) if path.is_file() and "__pycache__" not in path.parts}
+    if not contents:
+        raise RuntimeError(f"no skill files to snapshot under {root}")
+    digest = digest_json({name: digest_bytes(data) for name, data in contents.items()})
+    target = Path(directory) / f"skill-snapshot-{digest[:12]}"
+    if not (target / "jevify").is_dir():
+        staging = Path(tempfile.mkdtemp(prefix="skill-stage-", dir=Path(directory)))
+        for name, data in contents.items():
+            destination = staging / "jevify" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
+        try:
+            staging.rename(target)
+        except OSError:
+            shutil.rmtree(staging)
+            if not (target / "jevify").is_dir():
+                raise
+    if skill_identity(target, "skill")["materialized_sha256"] != digest:
+        raise RuntimeError("retained skill snapshot does not match its digest")
+    return target, digest
 
 
 def source_changes(root):
@@ -1013,16 +1102,43 @@ def adherence(strategy, method):
             "evidence_class": "persisted_usage_and_model_printable_helper_receipts"}
 
 
-def execution_status(answered, calls, stop):
+def process_outcome(*, deadline, max_calls, forced, returncode, malformed, agent_ended):
+    """Process facts beside the answer. A captured answer is kept even when the process failed."""
+    problems = []
+    if deadline:
+        problems.append("forced_deadline")
+    elif max_calls:
+        problems.append("forced_max_calls")
+    elif forced:
+        problems.append("forced_runner")
+    if returncode != 0:
+        problems.append("nonzero_exit")
+    if malformed:
+        problems.append("malformed_stream")
+    if not agent_ended:
+        problems.append("missing_agent_end")
+    return (problems[0] if problems else "clean_exit"), problems
+
+
+def answer_outcome(final_answers, answered):
+    if final_answers:
+        return "final_answer"
+    return "empty_stop" if answered else "no_answer"
+
+
+def execution_status(answered, calls, stop, process_status="clean_exit"):
     if not calls and not answered:
         return "infra"
     if stop in ("deadline", "max_calls"):
         return "incomplete"
-    return "complete" if answered else "failed"
+    if not answered:
+        return "failed"
+    return "complete" if process_status == "clean_exit" else "process_failed"
 
 
 def route_evidence(rows, receipts=()):
     rows = [row for row in rows if row["origin"] == "auxiliary"]
+    judgments = [row for row in rows if row.get("bucket") == "judgment"]
     items = [item for receipt in receipts for batch in receipt.get("batches", []) if isinstance(batch, dict)
              for item in batch.get("items", []) if isinstance(item, dict)]
     return {
@@ -1045,9 +1161,329 @@ def route_evidence(rows, receipts=()):
         "primary_models": sorted({row["primary_model"] for row in rows if isinstance(row.get("primary_model"), str)}),
         "response_models": sorted({row["response_model"] for row in rows if isinstance(row.get("response_model"), str)}),
         "fallback_rows": sum(row.get("fallback") is True for row in rows),
+        "judgment_rows": len(judgments),
         "provenance_unknown_rows": sum(row.get("selected_model") is None or row.get("primary_model") is None
-                                       for row in rows if row.get("purpose") == "judgment"),
+                                       or type(row.get("fallback")) is not bool
+                                       for row in judgments),
+        "response_unknown_rows": sum(not isinstance(row.get("response_model"), str) for row in judgments),
     }
+
+
+def count_fetch_rate_callsites(repo):
+    """The fixture key's call-site rule, applied to the launch fixture the subject will see."""
+    return sum("fetch_rate(" in line and not line.lstrip().startswith("def ")
+               for path in sorted((Path(repo) / "billing").rglob("*.py"))
+               for line in path.read_text(encoding="utf-8").splitlines())
+
+
+def _repo_python_files(repo):
+    return [path for path in sorted(Path(repo).rglob("*.py")) if ".git" not in path.relative_to(repo).parts]
+
+
+def control_expectation(case, repo):
+    """Control facts taken from the launch fixture before the subject acts."""
+    spec = case.get("control")
+    if spec is None:
+        return None
+    if spec["kind"] == "answer_integer":
+        present = (Path(repo) / "billing").is_dir()
+        return {"kind": spec["kind"], "precondition": present,
+                "expected": count_fetch_rate_callsites(repo) if present else None}
+    target = Path(repo) / spec["file"]
+    text = target.read_text(encoding="utf-8") if target.is_file() else ""
+    match = re.search(rf"^{re.escape(spec['old'])}\s*=\s*(.+?)\s*$", text, re.M)
+    value = None if match is None else match.group(1)
+    return {"kind": spec["kind"], "precondition": value is not None,
+            "expected": {"old": spec["old"], "new": spec["new"], "file": spec["file"], "value": value}}
+
+
+def control_outcome(expectation, repo, final_answer, answer_status):
+    """Deterministic correctness: a bare integer answer, or the post-session repository state."""
+    if expectation is None:
+        return None
+    result = {"schema": 1, "kind": expectation["kind"], "expected": expectation["expected"],
+              "precondition": expectation["precondition"], "observed": None, "correct": None, "reasons": [],
+              "evidence_class": "deterministic_runner_check"}
+    if not expectation["precondition"]:
+        result["reasons"].append("control precondition absent from the launch fixture")
+        return result
+    if expectation["kind"] == "answer_integer":
+        if answer_status != "final_answer":
+            result.update(correct=False, reasons=["no final answer"])
+            return result
+        match = re.fullmatch(r"\s*(\d+)\.?\s*", final_answer)
+        if match is None:
+            result.update(correct=False, reasons=["final answer is not a single integer"])
+            return result
+        result["observed"] = int(match.group(1))
+        result["correct"] = result["observed"] == expectation["expected"]
+        return result
+    spec = expectation["expected"]
+    target = Path(repo) / spec["file"]
+    text = target.read_text(encoding="utf-8") if target.is_file() else ""
+    stale = [path.relative_to(repo).as_posix() for path in _repo_python_files(repo)
+             if re.search(rf"\b{re.escape(spec['old'])}\b", path.read_text(encoding="utf-8", errors="replace"))]
+    renamed = re.search(rf"^{re.escape(spec['new'])}\s*=\s*{re.escape(spec['value'])}\s*$", text, re.M) is not None
+    result["observed"] = {"stale_references": stale, "renamed_with_original_value": renamed}
+    result["correct"] = not stale and renamed
+    if stale:
+        result["reasons"].append("old identifier is still referenced")
+    if not renamed:
+        result["reasons"].append("new identifier with the original value is absent")
+    return result
+
+
+def question_coverage(method):
+    """Whether an attempt's question counts are exhaustive. Stock hosts supply no proof of that.
+
+    Ledger rows are not completeness proof: cached judging can emit zero rows, and an unverified judge
+    (judged None) can leave none. Only explicit exhaustive host evidence may set complete; no supported
+    channel exists yet, so every attempt is incomplete. Change this function, not the callers, when one does.
+    """
+    return {"complete": False, "evidence_class": "no_exhaustive_host_question_count",
+            "judged": method["judged"], "ledger_rows": method["cache"]["rows"]}
+
+
+class Envelope:
+    """Authorized exposure gate: reserves each attempt before it starts and observes its question coverage.
+
+    Attempts and concurrency are enforced independently. A question limit is an observed-only stop guard:
+    it counts host-reported known questions as a lower bound, and it stops scheduling as
+    questions_unverifiable whenever question coverage is incomplete, which is never counted as zero.
+    An attempt already running may finish past a limit; the envelope bounds scheduling, not billing.
+    """
+
+    def __init__(self, attempts=None, questions=None):
+        self.limits = {"attempts": attempts, "questions": questions}
+        self._lock = threading.Lock()
+        self.attempts_reserved = 0
+        self.questions_observed = 0
+        self.questions_unknown_rows = 0
+        self.coverage_unknown = False
+        self.exhausted_by = None
+
+    def reserve(self):
+        with self._lock:
+            if self.limits["attempts"] is not None and self.attempts_reserved >= self.limits["attempts"]:
+                return self._refuse("attempts")
+            if self.limits["questions"] is not None:
+                # Incomplete coverage is not zero: without exhaustive counts a question limit cannot be checked.
+                if self.coverage_unknown or self.questions_unknown_rows:
+                    return self._refuse("questions_unverifiable")
+                if self.questions_observed >= self.limits["questions"]:
+                    return self._refuse("questions")
+            self.attempts_reserved += 1
+            return True
+
+    def _refuse(self, reason):
+        self.exhausted_by = self.exhausted_by or reason
+        return False
+
+    def question_exposure_status(self):
+        """Actual question exposure. Known questions alone are a lower bound, never an exposure."""
+        if not self.attempts_reserved:
+            return "not_observed"
+        return "unknown" if self.coverage_unknown or self.questions_unknown_rows else "observed_complete"
+
+    def observe(self, questions, unknown_rows, coverage_complete=False):
+        with self._lock:
+            self.questions_observed += questions
+            self.questions_unknown_rows += unknown_rows
+            self.coverage_unknown = self.coverage_unknown or not coverage_complete
+
+    def record(self):
+        return {"schema": 2, "limits": dict(self.limits), "attempts_reserved": self.attempts_reserved,
+                "questions_observed": self.questions_observed,
+                "questions_unknown_rows": self.questions_unknown_rows,
+                "question_coverage_unknown": self.coverage_unknown,
+                "question_guard": "observed_only_stop" if self.limits["questions"] is not None else "none",
+                "question_exposure": self.question_exposure_status(),
+                "exhausted_by": self.exhausted_by,
+                "dollar_envelope": None, "hard_dollar_guarantee": False,
+                "notes": ["Limits gate scheduling; an in-flight attempt may finish past a limit.",
+                          "questions_observed is a known subtotal, a lower bound on actual questions.",
+                          "Incomplete question coverage, including zero ledger rows, stops a question-limited "
+                          "envelope as questions_unverifiable; it is never counted as zero.",
+                          "Question exposure is never reported as bounded: the limit is an observed-only stop guard."]}
+
+
+def preflight_plan(args, planned_runs, concurrency):
+    """Planned exposure before any session. Refusals are explicit; nothing is silently reduced."""
+    authorized = {"attempts": args.authorize_attempts, "questions": args.authorize_questions,
+                  "concurrency": args.authorize_concurrency}
+    refusals = []
+    if authorized["attempts"] is not None and authorized["attempts"] < planned_runs:
+        refusals.append(f"authorized attempts {authorized['attempts']} cannot cover one attempt per planned run "
+                        f"({planned_runs})")
+    return {"schema": 1, "planned_runs": planned_runs,
+            "attempt_upper_bound": planned_runs * (args.retries + 1), "authorized": authorized,
+            "effective_concurrency": concurrency,
+            "per_attempt": {"max_time_seconds": args.max_time, "max_calls": args.max_calls,
+                            "watchdog_seconds": args.max_time + 30},
+            "question_exposure": ("unbounded: no question limit was authorized; actual question exposure is unknown"
+                                  if authorized["questions"] is None
+                                  else "observed-only stop guard: scheduling stops once observed known questions reach "
+                                       "the limit, and stops as questions_unverifiable once question coverage is "
+                                       "incomplete (stock hosts never prove completeness); actual question exposure "
+                                       "is not bounded"),
+            "dollar_exposure": {"ceiling": None, "hard_dollar_guarantee": False,
+                                "reason": "billing is unknown or catalog-estimated; no dollar envelope is enforced"},
+            "refusals": refusals}
+
+
+def load_thresholds(raw):
+    """Parse the predeclared decision rule. Its identity is the canonical digest of the parsed rule."""
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict) or value.get("schema") != 1 or value.get("confidence") != CONFIDENCE:
+        raise ValueError("thresholds need schema 1 and confidence 0.95")
+    if type(value.get("min_cases")) is not int or value["min_cases"] < 2:
+        raise ValueError("thresholds need min_cases of at least 2 independent cases")
+    metrics, rules = value.get("metrics"), value.get("rules")
+    if not isinstance(metrics, dict) or set(metrics) != set(THRESHOLD_ROLES) \
+            or not all(isinstance(name, str) and name for name in metrics.values()):
+        raise ValueError("thresholds need correctness, coverage and unsafe metric names")
+    rule_names = ("correctness_min_delta", "coverage_max_regression", "unsafe_max_increase")
+    if not isinstance(rules, dict) or set(rules) != set(rule_names) \
+            or not all(isinstance(rules[name], (int, float)) and not isinstance(rules[name], bool)
+                       for name in rule_names):
+        raise ValueError("thresholds need numeric correctness, coverage and unsafe rules")
+    if rules["coverage_max_regression"] < 0 or rules["unsafe_max_increase"] < 0:
+        raise ValueError("coverage and unsafe limits are magnitudes and must be non-negative")
+    return value, digest_json(value)
+
+
+def mean_or_none(values):
+    numbers = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    return round(sum(numbers) / len(numbers), 1) if numbers else None
+
+
+def count_by(runs, field):
+    counts = {}
+    for run in runs:
+        name = run.get(field)
+        key = "unrecorded" if name is None else str(name)
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def control_means(runs):
+    """Per-case mean runner-graded control correctness (1/0); unscored attempts are omitted."""
+    values = {}
+    for run in runs:
+        control = run.get("control")
+        if isinstance(control, dict) and control.get("correct") is not None:
+            values.setdefault(run["case"], []).append(1.0 if control["correct"] else 0.0)
+    return {case: sum(items) / len(items) for case, items in values.items()}
+
+
+def control_summary(runs):
+    controls = [run["control"] for run in runs if isinstance(run.get("control"), dict)]
+    scored = [control for control in controls if control.get("correct") is not None]
+    return {"scored": len(scored), "correct": sum(control["correct"] is True for control in scored),
+            "unscored": len(controls) - len(scored)}
+
+
+def paired_case_comparison(base_case_values, current_case_values, confidence=CONFIDENCE):
+    """Case is the independent unit: one value per case per run, then a t-interval over case deltas."""
+    if confidence != CONFIDENCE:
+        raise ValueError("only the predeclared 0.95 two-sided interval is supported")
+    cases = {case: round(current_case_values[case] - base_case_values[case], 6)
+             for case in sorted(set(base_case_values) & set(current_case_values))
+             if base_case_values[case] is not None and current_case_values[case] is not None}
+    unpaired = sorted(case for case in set(base_case_values) | set(current_case_values) if case not in cases)
+    count = len(cases)
+    if count == 0:
+        return {"method": "paired_case_mean_t_interval", "confidence": confidence, "n": 0, "mean_delta": None,
+                "interval": None, "cases": cases, "unpaired": unpaired}
+    mean = sum(cases.values()) / count
+    interval = None
+    if count >= 2:
+        df = count - 1
+        variance = sum((delta - mean) ** 2 for delta in cases.values()) / df
+        t_value = T_CRITICAL_95[df] if df <= 30 else 1.96
+        half_width = t_value * math.sqrt(variance / count)
+        interval = {"low": round(mean - half_width, 6), "high": round(mean + half_width, 6),
+                    "df": df, "t_critical": t_value}
+    return {"method": "paired_case_mean_t_interval", "confidence": confidence, "n": count,
+            "mean_delta": round(mean, 6), "interval": interval, "cases": cases, "unpaired": unpaired}
+
+
+def threshold_recommendation(metrics, thresholds, contract_check, predeclared):
+    """Predeclared rule over case-level intervals. Withholds rather than choosing a threshold after results."""
+    reasons = [f"controlled: {name}" for name in contract_check["controlled_differences"]]
+    if contract_check.get("reason"):
+        reasons.append(contract_check["reason"])
+    if not contract_check["one_variable"] and not reasons:
+        reasons.append("treatment does not differ in exactly one field")
+    if reasons or not contract_check["compatible"] or not contract_check["one_variable"]:
+        return {"verdict": "not_comparable", "reasons": reasons}
+    if predeclared is None or predeclared.get("sha256") != digest_json(thresholds) \
+            or predeclared.get("thresholds") != thresholds:
+        return {"verdict": "withheld", "reasons": ["thresholds are not the identical predeclared rule"]}
+    results = {role: metrics.get(thresholds["metrics"][role]) for role in THRESHOLD_ROLES}
+    if any(result is None or result["interval"] is None for result in results.values()):
+        return {"verdict": "inconclusive", "reasons": ["a required metric has no interval"]}
+    shared = min(result["n"] for result in results.values())
+    if shared < thresholds["min_cases"]:
+        return {"verdict": "inconclusive",
+                "reasons": [f"{shared} shared independent cases; min_cases is {thresholds['min_cases']}"]}
+    rules = thresholds["rules"]
+    correct, coverage, unsafe = (results[role]["interval"] for role in THRESHOLD_ROLES)
+    if unsafe["low"] > rules["unsafe_max_increase"]:
+        return {"verdict": "contradicts_candidate",
+                "reasons": ["unsafe metric increase exceeds its limit beyond chance"]}
+    if correct["high"] < 0 or coverage["high"] < -rules["coverage_max_regression"]:
+        return {"verdict": "contradicts_candidate",
+                "reasons": ["correctness or coverage falls below its bound beyond chance"]}
+    if correct["low"] >= rules["correctness_min_delta"] and coverage["low"] >= -rules["coverage_max_regression"] \
+            and unsafe["high"] <= rules["unsafe_max_increase"]:
+        return {"verdict": "supports_candidate", "reasons": []}
+    return {"verdict": "inconclusive", "reasons": ["intervals do not clear the predeclared rule"]}
+
+
+def contract_differences(base_contract, current_contract):
+    """Full controlled-contract comparison; a missing field on either side is a difference, not a match."""
+    if not isinstance(base_contract, dict) or not isinstance(base_contract.get("controlled"), dict) \
+            or not isinstance(base_contract.get("treatment"), dict):
+        return {"compatible": False, "one_variable": False, "controlled_differences": [],
+                "treatment_differences": [], "unrecorded": ["comparison_contract"],
+                "reason": "baseline predates the recorded comparison contract"}
+    now_controlled, now_treatment = current_contract["controlled"], current_contract["treatment"]
+    controlled = [name for name in CONTRACT_CONTROLLED
+                  if base_contract["controlled"].get(name) != now_controlled.get(name)]
+    treatment = [name for name in CONTRACT_TREATMENT
+                 if base_contract["treatment"].get(name) != now_treatment.get(name)]
+    return {"compatible": not controlled, "one_variable": not controlled and len(treatment) == 1,
+            "controlled_differences": controlled, "treatment_differences": treatment,
+            "unrecorded": [], "reason": None}
+
+
+def comparison_contract(args, *, cases_sha, selected_ids, identities, source, skill, runner, cache_seed,
+                        thresholds_sha, concurrency):
+    """What a one-variable comparison must hold fixed, plus the treatment fields allowed to differ."""
+    controlled = {
+        "runner": runner["sha256"],
+        "source": digest_json({"kind": source["kind"], "source_manifest": source["source_manifest_sha256"]}),
+        "executable": source["executable"]["sha256"],
+        "host": {"system": platform.system(), "machine": platform.machine(), "python": runner["python"]},
+        "model_requested": args.model or "default-role",
+        "thinking_requested": args.thinking or "configured",
+        "cases": {"sha256": cases_sha, "selected_ids": selected_ids},
+        "fixtures": digest_json(identities),
+        "cache": {"mode": args.cache_mode,
+                  "seed_initial_sha256": None if cache_seed is None else cache_seed["initial_sha256"]},
+        "method_settings": METHOD_SETTINGS,
+        "limits": {"max_time": args.max_time, "max_calls": args.max_calls, "retries": args.retries,
+                   "reps": args.reps, "concurrency": concurrency},
+        "session_flags": list(SESSION_FLAGS),
+        "tools": TOOLS.split(","),
+        "envelope": {"attempts": args.authorize_attempts, "questions": args.authorize_questions},
+        "predeclared_thresholds": thresholds_sha,
+    }
+    treatment = {"skill": {"arm": args.arm,
+                           "bundle": skill["materialized_sha256"] if args.arm == "skill" else None},
+                 "strategy": args.strategy}
+    return {"controlled": controlled, "treatment": treatment}
 
 
 def _die_with_parent():
@@ -1082,16 +1518,30 @@ def run_one(case, rep, overlay, desc_probe, args, workdir):
 
     Those are provider or startup failures, not strategy decisions. Every attempt,
     including failed and incomplete ones, remains in the result with its own costs.
+    The authorized envelope reserves each attempt, retries included, before it starts.
     """
-    attempts = []
+    envelope = getattr(args, "envelope", None) or Envelope()
+    if not envelope.reserve():
+        return {"not_scheduled": True, "case": case["id"], "rep": rep, "reason": envelope.exhausted_by}
+    attempts, retry_blocked = [], None
     for attempt in range(args.retries + 1):
+        if attempt and not envelope.reserve():
+            retry_blocked = envelope.exhausted_by
+            break
         attempts.append(attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir))
+        known = attempts[-1]["method"]["cache"]
+        envelope.observe(known["questions_known"], known["questions_unknown_rows"],
+                         coverage_complete=attempts[-1]["question_coverage"]["complete"])
         if attempts[-1]["execution_status"] != "infra":
             break
     result = dict(attempts[-1])
     result["attempts"] = len(attempts)
     result["attempt_records"] = attempts
     result["final_attempt_id"] = attempts[-1]["attempt_id"]
+    result["retry_blocked_by_envelope"] = retry_blocked
+    result["attempt_secs"] = [item["secs"] for item in attempts]
+    result["total_secs"] = round(sum(result["attempt_secs"]), 1)
+    result["final_attempt_secs"] = attempts[-1]["secs"]
     result["accounting"] = merge_accounting([item["accounting"] for item in attempts])
     result["cost_ledger"] = result["accounting"]
     return result
@@ -1103,6 +1553,7 @@ def attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir):
     dataset = case.get("dataset", "billing")
     repo = fixture.build(workdir / f"{case['id']}-{rep}-{attempt}", scale=case.get("scale", 1), dataset=dataset)
     plan = public_plan(repo)
+    control = control_expectation(case, repo)
     prompt = strategy_prompt(case, repo, args.strategy)
     namespace = getattr(args, "cache_seed", None) if args.cache_mode == "warm" else args.cache_namespace
     cache = cache_plan(args.cache_mode, namespace, workdir, case["id"], rep, attempt)
@@ -1222,6 +1673,9 @@ def attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir):
             LIVE.discard(proc)
     if deadline_reached.is_set():
         stop = "deadline"
+    process_status, process_problems = process_outcome(
+        deadline=deadline_reached.is_set(), max_calls=stop == "max_calls", forced=forced.is_set(),
+        returncode=proc.returncode, malformed=stream_malformed, agent_ended=agent_ended)
     try:
         auxiliary, session_conflicts, snapshot, session_evidence = read_session_usage(
             session_dir, attempt_id, repo,
@@ -1237,7 +1691,10 @@ def attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir):
                                       "process_returncode": proc.returncode,
                                       "stream_malformed": stream_malformed}
     method = method_evidence(calls, receipts, accounting, plan, args.strategy)
-    status = execution_status(answered, calls, stop)
+    answer_status = answer_outcome(final_answers, answered)
+    status = execution_status(answered, calls, stop, process_status)
+    answer_text = final_answers[-1]["text"] if final_answers else ""
+    control_result = control_outcome(control, repo, answer_text, answer_status)
     first_data = next((i for i, call in enumerate(calls) if call["data"]), None)
     triggered = skill_at is not None
     return {
@@ -1246,6 +1703,10 @@ def attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir):
         "keyword": bool(case.get("keyword")), "dataset": dataset, "key": case.get("key"),
         "scale": case.get("scale", 1),
         "execution_status": status,
+        "answer_status": answer_status,
+        "process_status": process_status,
+        "process_problems": process_problems,
+        "control": control_result,
         "infra": status == "infra",
         # Availability diagnostic: the skill was opened (trigger) or not (no_trigger). Not outcome quality.
         "pass": True if case["expect"] == "either" else triggered if case["expect"] == "trigger" else not triggered,
@@ -1269,6 +1730,7 @@ def attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir):
         "cache": {**cache, "path": None if cache["path"] is None else str(cache["path"]),
                   "observed": method["cache"]},
         "method": method,
+        "question_coverage": question_coverage(method),
         "route": route_evidence(accounting["entries"], receipts),
         "prompt_sha256": digest_bytes(prompt.encode()),
         "raw_path": str(raw_path),
@@ -1276,14 +1738,14 @@ def attempt_one(case, rep, attempt, overlay, desc_probe, args, workdir):
     }
 
 
-def summarize(runs):
+def summarize(runs, *, planned=None, not_scheduled=0):
     valid = [run for run in runs if not run["infra"]]
     per_case = {}
     for run in valid:
         case = per_case.setdefault(run["case"], {"expect": run["expect"], "keyword": run["keyword"], "n": 0, "pass": 0,
                                                 "skill_before_data": 0, "judged": 0, "judged_unverified": 0,
                                                 "strategy_adherence_pass": 0, "strategy_adherence_scored": 0,
-                                                "execution_incomplete": 0})
+                                                "execution_incomplete": 0, "control_scored": 0, "control_correct": 0})
         case["n"] += 1
         case["pass"] += run["pass"]
         case["skill_before_data"] += run["skill_before_data"]
@@ -1294,6 +1756,10 @@ def summarize(runs):
             case["strategy_adherence_scored"] += 1
             case["strategy_adherence_pass"] += passed
         case["execution_incomplete"] += run.get("execution_status") in ("failed", "incomplete")
+        control = run.get("control")
+        if isinstance(control, dict) and control.get("correct") is not None:
+            case["control_scored"] += 1
+            case["control_correct"] += control["correct"] is True
     costs = [run["usage"]["cost"] for run in valid if (run.get("usage") or {}).get("cost") is not None]
     auto = [run for run in valid if run["expect"] == "trigger" and not run["keyword"]]
     neg = [run for run in valid if run["expect"] == "no_trigger"]
@@ -1302,8 +1768,19 @@ def summarize(runs):
     return {
         "availability_diagnostics_are_not_outcome_quality": True,
         "auto_trigger": f"{sum(run['skill_read'] for run in auto)}/{len(auto)}",
-        "auto_judged": f"{sum(run.get('judged') is True for run in auto)}/"
-                       f"{sum(run.get('judged') is not None for run in auto)}",
+        "cohorts": {
+            "planned_runs": planned if planned is not None else len(runs) + not_scheduled,
+            "scheduled_runs": len(runs),
+            "not_scheduled_runs": not_scheduled,
+            "completed_runs": len(valid),
+            "infra_final_runs": len(runs) - len(valid),
+            "scheduled_mean_total_secs": mean_or_none(run.get("total_secs", run["secs"]) for run in runs),
+            "scheduled_mean_final_attempt_secs": mean_or_none(run["secs"] for run in runs),
+            "completed_mean_total_secs": mean_or_none(run.get("total_secs", run["secs"]) for run in valid),
+            "completed_mean_final_attempt_secs": mean_or_none(run["secs"] for run in valid),
+        },
+        "auto_judged": f"{sum(run.get('judged') is True for run in auto)}/{len(auto)}",
+        "method_use_evidence": count_by(auto, "judged_evidence_class"),
         "auto_judged_unverified": sum(run.get("judged") is None for run in auto),
         "false_trigger": f"{sum(run['skill_read'] for run in neg)}/{len(neg)}",
         "keyword": f"{sum(run['skill_read'] for run in kw)}/{len(kw)}",
@@ -1313,7 +1790,10 @@ def summarize(runs):
         "strategy_violations": sum((run.get("strategy_adherence") or {}).get("passed") is False for run in runs),
         "eval_errors": sum(run["eval_errors"] for run in runs),
         "skill_source_mismatch": sum(1 for run in runs if run["skill_source_ok"] is False),
-        "mean_secs": round(sum(run["secs"] for run in valid) / len(valid), 1) if valid else None,
+        "answer_outcomes": count_by(valid, "answer_status"),
+        "process_outcomes": count_by(runs, "process_status"),
+        "process_failed": sum(run.get("execution_status") == "process_failed" for run in runs),
+        "controls": control_summary(valid),
         "mean_outer_compatibility_cost": round(sum(costs) / len(costs), 4) if costs else None,
         "per_case": per_case,
     }
@@ -1328,6 +1808,13 @@ def validate_case(case):
         raise ValueError(f"case {case['id']!r} needs a goal prompt")
     if not isinstance(case.get("scale", 1), int):
         raise ValueError(f"case {case['id']!r} has a non-integer scale")
+    control = case.get("control")
+    if control is not None:
+        if not isinstance(control, dict) or control.get("kind") not in CONTROL_KINDS:
+            raise ValueError(f"case {case['id']!r}: control kind must be one of {', '.join(CONTROL_KINDS)}")
+        if control["kind"] == "repo_rename" and not all(isinstance(control.get(name), str) and control[name]
+                                                         for name in ("old", "new", "file")):
+            raise ValueError(f"case {case['id']!r}: repo_rename control needs old, new and file")
 
 
 def main():
@@ -1358,8 +1845,22 @@ def main():
     ap.add_argument("--retries", type=int, default=1, help="retries for sessions with no tool call or answer")
     ap.add_argument("--out", required=True)
     ap.add_argument("--raw-dir", help="directory for raw JSON events and stderr (default: beside --out)")
+    ap.add_argument("--authorize-attempts", type=int,
+                    help="attempt sessions, including retries, that may start; scheduling stops at this count")
+    ap.add_argument("--authorize-questions", type=int,
+                    help="stop scheduling once observed known judgment questions reach this count")
+    ap.add_argument("--authorize-concurrency", type=int,
+                    help="simultaneous attempt cap (the smaller of this and --jobs)")
+    ap.add_argument("--preflight", action="store_true",
+                    help="print the planned exposure and exit before any session starts")
+    ap.add_argument("--thresholds", help="predeclared decision JSON; its canonical digest binds the run")
     ap.add_argument("--compare", help="earlier result file to diff against")
     args = ap.parse_args()
+    for name in ("authorize_attempts", "authorize_questions", "authorize_concurrency"):
+        if getattr(args, name) is not None and getattr(args, name) < 1:
+            ap.error(f"--{name.replace('_', '-')} must be at least 1")
+    if args.jobs < 1:
+        ap.error("--jobs must be at least 1")
     resolved = shutil.which(args.omp) if args.omp else None
     if resolved is None:
         ap.error(f"omp executable not found: {args.omp!r}")
@@ -1374,26 +1875,51 @@ def main():
     except (RuntimeError, ValueError) as exc:
         ap.error(str(exc))
 
-    payload = json.loads(Path(args.cases).read_text())
-    cases = payload["cases"]
-    if args.only:
-        cases = [case for case in cases if case["id"] in set(args.only)]
+    cases_bytes = Path(args.cases).read_bytes()
     try:
+        payload = json.loads(cases_bytes.decode("utf-8"))
+        cases = payload["cases"]
+        known = {case["id"] for case in cases}
+        if args.only and not set(args.only) <= known:
+            raise ValueError(f"--only names cases absent from {args.cases}: {sorted(set(args.only) - known)}")
+        if args.only:
+            cases = [case for case in cases if case["id"] in set(args.only)]
         for case in cases:
             validate_case(case)
         identities = {case["id"]: fixture_identity(case) for case in cases}
-    except (RuntimeError, ValueError, OSError) as exc:
+        thresholds, thresholds_sha = (None, None)
+        if args.thresholds:
+            thresholds, thresholds_sha = load_thresholds(Path(args.thresholds).read_bytes())
+    except (RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         ap.error(str(exc))
+    selected_ids = [case["id"] for case in cases]
+    concurrency = min(args.jobs, args.authorize_concurrency or args.jobs)
+    planned = [(case, rep) for case in cases for rep in range(1, args.reps + 1)]
+    plan = preflight_plan(args, len(planned), concurrency)
+    if plan["refusals"]:
+        ap.error("; ".join(plan["refusals"]))
+    print("preflight " + json.dumps(plan, sort_keys=True), flush=True)
+    if args.preflight:
+        return
+    args.envelope = Envelope(attempts=args.authorize_attempts, questions=args.authorize_questions)
     with tempfile.TemporaryDirectory(prefix="jevify-eval-") as tmp:
         tmp = Path(tmp)
         try:
             if args.ref:
-                skills_dir = skill_from_ref(args.ref, tmp / "skills")
+                source_skills = skill_from_ref(args.ref, tmp / "skills")
             else:
-                skills_dir = Path(args.skill_dir or ROOT / "skills").resolve()
-            skill = skill_identity(skills_dir, args.arm)
-            if not skill["complete"]:
+                source_skills = Path(args.skill_dir or ROOT / "skills").resolve()
+            launch_skill = skill_identity(source_skills, args.arm)
+            if not launch_skill["complete"]:
                 raise RuntimeError("skill arm requires SKILL.md and jevify.py")
+            cases_snapshot = retain_content(args.raw_dir, f"cases-{digest_bytes(cases_bytes)[:12]}.json", cases_bytes)
+            if args.arm == "skill":
+                skills_dir, snapshot_sha = retain_skill_snapshot(source_skills, args.raw_dir)
+                if snapshot_sha != launch_skill["materialized_sha256"]:
+                    raise RuntimeError("skill bundle changed between identity and snapshot")
+                skill = {**skill_identity(skills_dir, args.arm), "snapshot_of": str(source_skills / "jevify")}
+            else:
+                skills_dir, skill = source_skills, launch_skill
         except RuntimeError as exc:
             ap.error(str(exc))
         skill_md = skills_dir / "jevify" / "SKILL.md"
@@ -1406,18 +1932,27 @@ def main():
             args.cache_seed = freeze_cache_seed(args.cache_namespace, work) if args.cache_mode == "warm" else None
         except (RuntimeError, ValueError, OSError) as exc:
             ap.error(str(exc))
-        jobs = [(case, rep) for case in cases for rep in range(1, args.reps + 1)]
-        runs = []
+        runner = runner_identity()
+        contract = comparison_contract(args, cases_sha=digest_bytes(cases_bytes), selected_ids=selected_ids,
+                                       identities=identities, source=source, skill=skill, runner=runner,
+                                       cache_seed=args.cache_seed, thresholds_sha=thresholds_sha,
+                                       concurrency=concurrency)
+        runs, not_scheduled = [], []
         # Each finished run is appended here at once, so a killed runner keeps its evidence.
         partial = Path(args.out + ".partial.jsonl")
         partial.parent.mkdir(parents=True, exist_ok=True)
         partial.write_text("")
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-        ex = cf.ThreadPoolExecutor(max_workers=args.jobs)
+        ex = cf.ThreadPoolExecutor(max_workers=concurrency)
         try:
-            futures = [ex.submit(run_one, case, rep, overlay, desc_probe, args, work) for case, rep in jobs]
+            futures = [ex.submit(run_one, case, rep, overlay, desc_probe, args, work) for case, rep in planned]
             for future in cf.as_completed(futures):
                 run = future.result()
+                if run.get("not_scheduled"):
+                    not_scheduled.append({"case": run["case"], "rep": run["rep"], "reason": run["reason"]})
+                    print(f"{run['case']:22} r{run['rep']} not scheduled: {run['reason']} authorization exhausted",
+                          flush=True)
+                    continue
                 runs.append(run)
                 with partial.open("a") as sink:
                     sink.write(json.dumps(run) + "\n")
@@ -1431,6 +1966,27 @@ def main():
             for proc in list(LIVE):
                 kill_tree(proc)
         runs.sort(key=lambda run: (run["case"], run["rep"]))
+        skill_after = skill_identity(source_skills, args.arm)["materialized_sha256"]
+        run_manifest = {
+            "schema": 1,
+            "runner": runner,
+            "jobs": args.jobs,
+            "effective_concurrency": concurrency,
+            "retries": args.retries,
+            "reps": args.reps,
+            "max_time": args.max_time,
+            "max_calls": args.max_calls,
+            "cases_snapshot": {"path": str(cases_snapshot), "sha256": digest_bytes(cases_bytes),
+                               "bytes": len(cases_bytes), "selected_ids": selected_ids},
+            "skill_snapshot": {"arm": args.arm, "launch_sha256": launch_skill["materialized_sha256"],
+                               "tested_sha256": skill["materialized_sha256"],
+                               "source_sha256_after_runs": skill_after,
+                               "source_unchanged_after_runs": skill_after == launch_skill["materialized_sha256"],
+                               "directory": skill["directory"]},
+            "predeclared_thresholds": None if thresholds is None else {
+                "sha256": thresholds_sha, "thresholds": thresholds,
+                "path": str(Path(args.thresholds).resolve())},
+        }
         result = {
             "schema": RESULT_SCHEMA,
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1445,15 +2001,9 @@ def main():
             "skill": skill,
             "cases_path": str(Path(args.cases).resolve()),
             "cases_schema": payload.get("schema"),
-            "cases_sha256": digest_bytes(Path(args.cases).read_bytes()),
+            "cases_sha256": digest_bytes(cases_bytes),
             "fixture_identities": identities,
-            "method_settings": {
-                "helper_concurrency": HELPER_CONCURRENCY,
-                "backend_retries": BACKEND_RETRIES,
-                "shared_deadline_seconds": SHARED_DEADLINE_SECONDS,
-                "grouped_k": GROUPED_K,
-                "evidence_class": "prescribed_method_settings_not_execution_proof",
-            },
+            "method_settings": METHOD_SETTINGS,
             "source": source,
             "omp": source["executable"]["version"],
             "omp_path": source["executable"]["path"],
@@ -1469,9 +2019,14 @@ def main():
             "thinking_seen": sorted({run["thinking"] for run in runs if run["thinking"]}),
             "reps": args.reps,
             "raw_dir": str(Path(args.raw_dir).resolve()),
-            "summary": summarize(runs),
+            "summary": summarize(runs, planned=len(planned), not_scheduled=len(not_scheduled)),
             "cost_ledger": merge_accounting([run["accounting"] for run in runs]),
             "runs": runs,
+            "not_scheduled": not_scheduled,
+            "envelope": args.envelope.record(),
+            "comparison_contract": contract,
+            "comparison_contract_sha256": digest_json(contract),
+            "run_manifest": run_manifest,
             "grading_cost": {"measured": False, "reported_cost": None,
                              "notes": ["Grade this execution artifact separately; do not copy its cost per arm."]},
         }
@@ -1486,21 +2041,26 @@ def main():
     print(f"arm {result['arm']} · strategy {result['strategy']} · cache {result['cache_mode']} · "
           f"cost {result['cost_ledger']['monetary_status']} · source {source['status']}")
     print(f"executable {result['omp_path']} version={result['omp'] or 'unknown'}")
+    cohorts = summary["cohorts"]
+    print(f"cohorts planned={cohorts['planned_runs']} scheduled={cohorts['scheduled_runs']} "
+          f"completed={cohorts['completed_runs']} not_scheduled={cohorts['not_scheduled_runs']} · "
+          f"envelope exhausted_by={args.envelope.exhausted_by} · question exposure {args.envelope.question_exposure_status()} · dollar envelope none")
     if args.compare:
         base = json.loads(Path(args.compare).read_text())
-        if base.get("cases_sha256") != result["cases_sha256"]:
-            print("warning: case file differs from the baseline; comparison is not one-variable")
-        base_setup = {"arm": base.get("arm", "skill"), "strategy": base.get("strategy", "auto")}
-        diffs = [f"{key} {value} -> {result[key]}" for key, value in base_setup.items() if value != result[key]]
-        if diffs:
-            print("note: baseline differs in " + "; ".join(diffs))
+        diff = contract_differences(base.get("comparison_contract"), contract)
+        print(f"contract compatible={diff['compatible']} one_variable={diff['one_variable']} "
+              f"controlled={diff['controlled_differences']} treatment={diff['treatment_differences']} "
+              f"unrecorded={diff['unrecorded']}")
+        if diff["reason"]:
+            print(f"note: {diff['reason']}")
+        controls = paired_case_comparison(control_means(base.get("runs", [])), control_means(runs))
+        interval = controls["interval"]
+        print(f"runner-graded controls: n={controls['n']} mean_delta={controls['mean_delta']} "
+              f"ci95={None if interval is None else [interval['low'], interval['high']]}")
         base_summary = base["summary"]
-        print(f"baseline auto_trigger {base_summary['auto_trigger']} · "
-              f"auto_judged {base_summary.get('auto_judged', '?')} · "
+        print(f"baseline auto_judged {base_summary.get('auto_judged', '?')} · "
               f"false_trigger {base_summary['false_trigger']} · keyword {base_summary['keyword']} · "
               f"either {base_summary.get('either', '?')}")
-        if base.get("schema", 1) < RESULT_SCHEMA:
-            print(f"note: baseline is schema {base.get('schema', 1)}; its execution evidence contract differs")
         print(f"  {'case':22} pass    judged   adherence")
         for case_id, case in sorted(summary["per_case"].items()):
             print(f"  {case_id:22} {case['pass']}/{case['n']}     "

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "confidence": 0.95,
+  "min_cases": 2,
+  "metrics": {
+    "correctness": "action_accuracy",
+    "coverage": "action_coverage",
+    "unsafe": "unsupported_fix_now_claims"
+  },
+  "rules": {
+    "correctness_min_delta": 0.1,
+    "coverage_max_regression": 0.05,
+    "unsafe_max_increase": 0
+  }
+}

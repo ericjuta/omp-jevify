@@ -290,7 +290,7 @@ class RunSummaryTests(unittest.TestCase):
             result("keyword", None, keyword=True), result("negative", None, expect="no_trigger"),
             result("either", None, expect="either"), result("infra", None, infra=True),
         ])
-        self.assertEqual(summary["auto_judged"], "1/2")
+        self.assertEqual(summary["auto_judged"], "1/3")
         self.assertEqual(summary["auto_judged_unverified"], 1)
         self.assertEqual(summary["per_case"]["auto"]["n"], 3)
         self.assertEqual(summary["per_case"]["auto"]["judged"], 1)
@@ -300,7 +300,7 @@ class RunSummaryTests(unittest.TestCase):
             self.assertEqual(summary["per_case"][case]["judged_unverified"], 1)
         self.assertNotIn("infra", summary["per_case"])
         unknown_only = run.summarize([result("auto", None)])
-        self.assertEqual(unknown_only["auto_judged"], "0/0")
+        self.assertEqual(unknown_only["auto_judged"], "0/1")
         self.assertEqual(unknown_only["auto_judged_unverified"], 1)
 
     def test_either_runs_are_their_own_count_and_stay_out_of_the_trigger_rates(self):
@@ -867,7 +867,7 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             original_hashes = {path: hashlib.sha256(raw).hexdigest() for path, raw in original_bytes.items()}
             key_hash = hashlib.sha256(json.dumps(original_key, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
-            def mutate_during_fixture_build(specs):
+            def mutate_during_fixture_build(specs, sources=None):
                 mutated_rows = [{**row, "answer": "Mutated existing JSONL answer"} for row in original_rows]
                 mutated_rows.append({"case": "outcome", "rep": 4, "answer": "Appended JSONL answer"})
                 partial.write_text("\n".join(json.dumps(row) for row in mutated_rows) + "\n")
