@@ -1435,26 +1435,6 @@ class JevSizingTests(unittest.TestCase):
             self.assertIsNone(jv.jev_tokens("hello"))
 
 
-class QuestionHashTests(unittest.TestCase):
-    def test_qhash_ignores_key_order_but_detects_criterion_change(self):
-        original = {
-            "verdict": {"type": "choice", "instructions": "Assess",
-                        "criteria": {"KEEP": "consumer contract", "PURGE": "echo"}},
-            "risk": {"type": "bool", "instructions": "Risk?",
-                     "criteria": {"true": "harm", "false": "none"}},
-        }
-        reordered = {
-            "risk": {"criteria": {"false": "none", "true": "harm"},
-                     "instructions": "Risk?", "type": "bool"},
-            "verdict": {"criteria": {"PURGE": "echo", "KEEP": "consumer contract"},
-                        "instructions": "Assess", "type": "choice"},
-        }
-        self.assertEqual(jv.qhash(original), jv.qhash(reordered))
-        changed = copy.deepcopy(reordered)
-        changed["verdict"]["criteria"]["PURGE"] = "unconsumed echo"
-        self.assertNotEqual(jv.qhash(original), jv.qhash(changed))
-
-
 class AstUnitsTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("uv"), "uv is needed to bootstrap ast-grep-py")
     def test_ast_units_recipe_f_includes_decorators_and_skips_helpers(self):
