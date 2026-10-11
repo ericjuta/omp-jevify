@@ -27,6 +27,8 @@ permission to edit. It generalises Can Bölük's Jevict
 omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.3.0'
 ```
 
+To replace an existing installation with this version, add `--force` to the command.
+
 The install command pins the published tag. The helper and eval contracts below
 describe this checked-out source; local changes and the separate host companion
 patch are not made available by reinstalling that tag.
@@ -74,11 +76,32 @@ not as evidence that the primary model answered.
 
 ## Upgrading to 0.3.0
 
+### What changed
+
+| Workflow | New in 0.3.0 |
+| --- | --- |
+| Plan a sweep | Full-request token planning and budget-aware packing without truncating evidence |
+| Recover interrupted work | Durable bundles and explicit resume instead of manual recovery |
+| Review model findings | Source snapshots, evidence-linked adjudication and guarded dry-run deletion |
+| Assess rubric reliability | Order-sensitive identities, retained score distributions and bounded sensitivity pilots |
+| Evaluate outcomes | Revision-bound comparisons, scheduling envelopes and isolated grading launches |
+
+See the [expanded release notes](https://github.com/ericjuta/omp-jevify/releases/tag/v0.3.0)
+for the before/after comparison, new recipes and measured limitations.
+
+### Migration checklist
+
 Re-freeze questions for new sweeps: question and choice ordering now contribute to
 rubric identity, so earlier hashes are not interchangeable. Run inputs require
 string unit IDs. Execution artifacts use schema 5; the grader calls justified repair
 recommendations `recommended_defects`, not observed code repairs. Existing saved
 schema-2 helper receipts remain readable; they do not gain missing historical evidence.
+
+Replace `slots=` with `grouping=grouping`, passing the full manifest from `jv.group`
+or `jv.pack`. For durable recovery, start with `jv.run(..., bundle_path=...)` and use
+`jv.resume` after interruption. Missing deliveries are resubmitted only with explicit
+`resubmit_missing=True`; stale batches otherwise stay incomplete. See the
+[API reference](skills/jevify/reference.md) for the complete contracts.
 
 Release verification: [retained smoke evidence](evals/results/release-v0.3.0-smoke.json)
 records 281 passing tests, real kernel-loss recovery without resubmission, source-bound
@@ -87,6 +110,9 @@ The direct-versus-flat comparison is **inconclusive** (one independent outcome c
 The 18-record synthetic extractor check produced four high-impact false recommendations;
 source review remains required. These observations establish exercised paths, not a
 quality or savings advantage. Host provenance and exhaustive billing remain unknown.
+Recovery is **not exactly-once execution**: an orphaned submission may still bill.
+Reattachment requires a surviving batch in the owning OMP session; it does not survive
+host process or session loss.
 
 ## Requirements
 
