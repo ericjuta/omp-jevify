@@ -564,7 +564,7 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 cases.write_text(json.dumps({"cases": [
                     {"id": "outcome", "dataset": "local", "scale": 1, "key": "selected"}]}))
                 source.write_text(json.dumps({"schema": 2, "fixture_identities": {"outcome": captured},
-                                              "runs": [{"case": "outcome", "answer": "Synthetic answer."}]}))
+                                              "runs": [{"case": "outcome", "answer": "shared is a claim. selected-bug is a claim. selected-debt is a claim."}]}))
                 with mock.patch.object(grade, "_fixture_keys", return_value=bundles), \
                         mock.patch.object(grade, "_judge", side_effect=fake_judge), \
                         mock.patch.object(grade, "_print_table"):
@@ -747,7 +747,7 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_grading_overhead_stays_unknown_with_missing_zero_or_no_batch_cost(self):
         bundles = {("local", 1): {"keys": {"facets": {"schema": 2, "items": [_finding("bug", "bug")]}},
                                   "public_identity": {}}}
-        for answer, batch_cost in (("Review complete.", None), ("Review complete.", 0.0), ("", None)):
+        for answer, batch_cost in (("bug review is complete.", None), ("bug review is complete.", 0.0), ("", None)):
             with self.subTest(answer=answer, batch_cost=batch_cost), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 cases, source, ledger_path = root / "cases.json", root / "captured.json", root / "grading.json"
@@ -830,25 +830,28 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         bundles = {("local", 1): {"keys": {"original": original_key, "replacement": replacement_key},
                                   "public_identity": {"review/rubric.json": "original-rubric"}}}
         assertions = {
-            "Original JSONL first": {
+            "The debt is deferred and introduced. The bug is deferred and not introduced.": {
                 "debt": _assertion(action="defer", introduced="yes"),
                 "bug": _assertion(action="defer", introduced="no"),
             },
-            "Original JSONL second": {
+            "The debt is refuted and deferred. The bug is not introduced.": {
                 "debt": _assertion(factual="refuted", action="defer", introduced="no"),
                 "bug": _assertion(introduced="no"),
             },
-            "Original JSON answer": {
+            "The debt is refuted and fix it now. The bug is refuted.": {
                 "debt": _assertion(factual="refuted", action="fix_now", introduced="no"),
                 "bug": _assertion(factual="refuted"),
             },
         }
         extracted = []
 
+        def assertion_for(state):
+            owner = next(answer for answer in assertions if state["answer"] in answer)
+            return assertions[owner].get(state["id"], _assertion())
+
         async def fake_judge(states, questions, timeout, concurrency):
             extracted.extend(states.values())
-            labels = {sid: assertions.get(state["answer"], {}).get(state["id"], _assertion())
-                      for sid, state in states.items()}
+            labels = {sid: assertion_for(state) for sid, state in states.items()}
             return labels, {}, {"id": "snapshot-extraction", "cost_usd": 0.25, "cache": {}}
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -860,7 +863,7 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             original_meta = {"schema": 2, "strategy": "original-strategy", "model": "original-model",
                              "fixture_identities": {"outcome": {"key": "original"}}}
             source.write_text(json.dumps({**original_meta, "runs": [
-                {"case": "outcome", "rep": 3, "answer": "Original JSON answer"},
+                {"case": "outcome", "rep": 3, "answer": "The debt is refuted and fix it now. The bug is refuted."},
             ]}))
             cases.write_text(json.dumps({"cases": [{"id": "outcome", "dataset": "local", "key": "original"}]}))
             original_bytes = {path: path.read_bytes() for path in (partial, source, cases)}
@@ -892,13 +895,17 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ledger["key_identities"]["outcome"]["key"], "original")
             self.assertEqual(ledger["key_identities"]["outcome"]["key_sha256"], key_hash)
             self.assertEqual(ledger["key_identities"]["outcome"]["public_identity"], bundles[("local", 1)]["public_identity"])
-            self.assertEqual({state["answer"] for state in extracted}, set(assertions))
+            self.assertEqual({state["answer"] for state in extracted}, {
+                "The debt is deferred and introduced.", "The bug is deferred and not introduced.",
+                "The debt is refuted and deferred.", "The bug is not introduced.",
+                "The debt is refuted and fix it now.", "The bug is refuted."})
             self.assertEqual({state["id"] for state in extracted}, {"debt", "bug"})
-            expected_rows = [original_rows, [{"case": "outcome", "rep": 3, "answer": "Original JSON answer"}]]
+            expected_rows = [original_rows, [{"case": "outcome", "rep": 3,
+                                              "answer": "The debt is refuted and fix it now. The bug is refuted."}]]
             expected_correct = {
-                "Original JSONL first": {"factual": 2, "action": 1, "introduced": 0},
-                "Original JSONL second": {"factual": 1, "action": 2, "introduced": 1},
-                "Original JSON answer": {"factual": 0, "action": 1, "introduced": 2},
+                "The debt is deferred and introduced. The bug is deferred and not introduced.": {"factual": 2, "action": 1, "introduced": 0},
+                "The debt is refuted and deferred. The bug is not introduced.": {"factual": 1, "action": 2, "introduced": 1},
+                "The debt is refuted and fix it now. The bug is refuted.": {"factual": 0, "action": 1, "introduced": 2},
             }
             for path, result, inputs in zip((partial, source), results, expected_rows):
                 persisted = json.loads(path.with_suffix(".graded.json").read_text())
@@ -1002,7 +1009,7 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(grade._load_runs(partial), ({"schema": None, "partial": True}, replacement_rows))
 
     async def test_strategy_outputs_share_blind_extraction_cost_and_keep_key_schemas_separate(self):
-        complete_answer = "The debt is supported but defer it; the introduced bug is supported and needs fixing."
+        complete_answer = "The debt is supported but defer it. The introduced bug is supported and needs fixing."
         partial_answer = "Fix the introduced bug."
         key = {"schema": 2, "items": [
             _finding("debt", None, actions=("defer", "no_action"), introduced="no"),
@@ -1028,7 +1035,7 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(set(state), allowed)
                 if not facet_batch:
                     labels[sid] = {"verdict": "flagged" if state["id"] == "historical-true" else "cleared"}
-                elif state["answer"] == complete_answer:
+                elif state["answer"] in complete_answer:
                     labels[sid] = (_assertion(action="defer", introduced="no")
                                    if state["id"] == "debt" else _assertion())
                 elif state["id"] == "debt":
@@ -1088,7 +1095,9 @@ class GradeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(private, blind_inputs)
         facet_batches = [states for facet_batch, states in extractions if facet_batch]
         self.assertEqual(len(facet_batches), 1)
-        self.assertEqual({state["answer"] for state in facet_batches[0].values()}, {complete_answer, partial_answer})
+        self.assertEqual({state["answer"] for state in facet_batches[0].values()},
+                         {"The debt is supported but defer it.", "The introduced bug is supported and needs fixing.",
+                          partial_answer})
 
         flat_outcome = next(row for row in flat["runs"] if row["case"] == "outcome")
         for facet in ("factual", "action", "introduced"):

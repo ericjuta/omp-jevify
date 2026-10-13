@@ -197,11 +197,12 @@ class ValidateExtractorTests(unittest.TestCase):
 
         with mock.patch.object(grade, "_judge", mock.AsyncMock(side_effect=judge)):
             report = asyncio.run(grade.validate_extractor_host(corpus_path))
-        self.assertEqual(set(sent), set(records))
+        # Absent claim ids are omitted and never judged; only bound records reach the host.
+        self.assertEqual(set(sent), set(records) - ABSENT_RECORDS)
         for rid, state in sent.items():
             self.assertEqual(state["id"], records[rid]["claim"], rid)
             self.assertEqual(state["item"], records[rid]["item"], rid)
-        self.assertEqual(sent["r01"]["id"], sent["r04"]["id"])  # one claim, two records, distinct keys
+        self.assertEqual(sent["r01"]["id"], sent["r07"]["id"])  # one claim, two records, distinct keys
         self.assertEqual(report["facets"]["action"]["accuracy"], 1.0)
 
     def test_host_validation_scores_judged_labels_and_keeps_extraction_provenance(self):
@@ -218,6 +219,282 @@ class ValidateExtractorTests(unittest.TestCase):
         self.assertEqual(report["false_repairs"], [])
         self.assertEqual(report["extraction"]["provenance"]["r01"]["source"], "host_item_stream_unavailable")
         self.assertNotIn("provenance", report["extraction"]["batch"])
+
+
+def _finding(iid, defect, *, factual="supported", actions=("fix_now",), introduced="yes"):
+    """Tiny schema2 key item, independent of the generated datasets and private keys."""
+    return {"id": iid, "desc": f"Synthetic claim {iid}", "factual": factual,
+            "actions": list(actions), "introduced": introduced, "defect": defect,
+            "group": "local", "evidence": ["local:1"], "rationale": "Synthetic regression key."}
+
+
+# Corpus records whose answers never name their claim id exactly (r02, r03, r04, r06 retained failures; r10, r12 silent).
+ABSENT_RECORDS = {"r02", "r03", "r04", "r06", "r10", "r12"}
+RETAINED_FAILURES = ("r02", "r03", "r04", "r06")
+# The prior extractor's erroneous output for the retained failures: fix_now, which smoke recorded as false repairs.
+PRIOR_FAILURE = {"factual": "supported", "action": "fix_now", "introduced": "yes"}
+OMITTED = {"factual": "omitted", "action": "omitted", "introduced": "omitted"}
+
+
+class EvidenceBindingTests(unittest.TestCase):
+    INVENTORY = frozenset(f"C{number:02d}" for number in range(1, 25))
+
+    def test_inventory_matches_the_refund_key_and_family_is_detected(self):
+        self.assertEqual(grade._refund_claim_inventory(), set(self.INVENTORY))
+        self.assertEqual(grade._id_family(self.INVENTORY), "C")
+        self.assertIsNone(grade._id_family(frozenset({"debt", "bug"})))
+
+    def test_retained_failure_patterns_are_absent_or_nonexact(self):
+        cases = {
+            ("C01 is supported and must be fixed now; HEAD introduced it.", "C02"),  # r02: sibling named
+            ("C99 is a fix-now defect and HEAD introduced it.", "C07"),  # r03: off-inventory named
+            ("C1 is supported and fix_now; HEAD introduced it.", "C01"),  # r04: nonexact near-miss
+            ("C01, C02 and C04 are one defect. All three are supported, must be fixed now.", "C06"),  # r06
+            ("c01 is supported.", "C01"),  # case-sensitive exact id
+            ("C010 is supported.", "C01"),  # token boundary
+        }
+        for answer, claim in cases:
+            with self.subTest(answer=answer, claim=claim):
+                status, reason = grade._evidence_binding(answer, claim, self.INVENTORY)
+                self.assertEqual(status, "absent")
+                self.assertIn(repr(claim), reason)
+
+    def test_valid_exact_and_explicit_group_attribution_is_judged_on_its_own_sentences(self):
+        whole = "C01 is supported. It should be fixed now, before release. HEAD introduced it: the stored-id branch sends a second create under a new key."
+        group = "C01, C02 and C04 are one defect. All three are supported, must be fixed now, and HEAD introduced them."
+        contradiction = "C01 is supported and should be fixed now; HEAD introduced it. Reconsidering, C01 is refuted and needs no action."
+        self.assertEqual(grade._evidence_binding(whole, "C01", self.INVENTORY), ("judged", whole))
+        self.assertEqual(grade._evidence_binding(group, "C02", self.INVENTORY), ("judged", group))
+        self.assertEqual(grade._evidence_binding(contradiction, "C01", self.INVENTORY), ("judged", contradiction))
+        self.assertEqual(grade._evidence_binding("C01 is supported. C02 is a separate topic.", "C02", self.INVENTORY),
+                         ("judged", "C02 is a separate topic."))
+
+    def test_cross_claim_off_inventory_and_repeated_ids_are_unattributed(self):
+        cases = (
+            ("C01 is supported; C02 is refuted.", "C01"),  # two claims, no explicit group
+            ("C01 is supported and must be fixed now; C99 is a separate defect.", "C01"),  # off-inventory in span
+            ("C01 and C02 are supported, C02 is refuted.", "C02"),  # repeated id outside the list
+            ("C01 is supported.", "C99"),  # claim outside the inventory
+        )
+        for answer, claim in cases:
+            with self.subTest(answer=answer, claim=claim):
+                status, reason = grade._evidence_binding(answer, claim, self.INVENTORY)
+                self.assertEqual(status, "unattributed")
+                self.assertTrue(reason)
+
+    def test_non_family_inventories_bind_by_exact_token_only(self):
+        inventory = frozenset({"debt", "bug"})
+        self.assertEqual(grade._evidence_binding("Fix the introduced bug.", "bug", inventory),
+                         ("judged", "Fix the introduced bug."))
+        self.assertEqual(grade._evidence_binding("Fix the introduced bug.", "debt", inventory)[0], "absent")
+
+    def test_disjunction_is_never_an_explicit_group(self):
+        answer = "C06 or C07 is a second settlement that must be fixed now; HEAD introduced it."
+        for claim in ("C06", "C07"):
+            with self.subTest(claim=claim):
+                status, reason = grade._evidence_binding(answer, claim, self.INVENTORY)
+                self.assertEqual(status, "unattributed")
+                self.assertIn("outside an explicit group", reason)
+
+    def test_repeated_or_off_inventory_member_breaks_a_group(self):
+        for answer in ("C01, C02 and C01 are one defect; fix now.", "C01, C02 and C99 are one defect; fix now."):
+            with self.subTest(answer=answer):
+                self.assertEqual(grade._evidence_binding(answer, "C01", self.INVENTORY)[0], "unattributed")
+
+    def test_explicit_groups_in_serial_bullet_bold_table_and_ampersand_forms_are_judged(self):
+        forms = (
+            ("C01, C02, and C04 are one defect. All three are supported, must be fixed now.", "C04",
+             "C01, C02, and C04 are one defect. All three are supported, must be fixed now."),
+            ("- C01, C02 and C04: supported, fix now, introduced by HEAD.", "C02",
+             "- C01, C02 and C04: supported, fix now, introduced by HEAD."),
+            ("**C01, C02 and C04** are one defect. All three are supported, must be fixed now.", "C01",
+             "**C01, C02 and C04** are one defect. All three are supported, must be fixed now."),
+            ("| C01, C02, C04 | supported | fix_now | yes |", "C04", "| C01, C02, C04 | supported | fix_now | yes |"),
+            ("C01 & C02 & C04 are one defect; all three must be fixed now.", "C02",
+             "C01 & C02 & C04 are one defect; all three must be fixed now."),
+        )
+        for answer, claim, span in forms:
+            with self.subTest(answer=answer, claim=claim):
+                self.assertEqual(grade._evidence_binding(answer, claim, self.INVENTORY), ("judged", span))
+
+    def test_continuation_stops_at_paragraph_heading_and_list_boundaries(self):
+        answer = ("## C01\nSupported; fix now; HEAD introduced it.\n\n"
+                  "## Lost-ack claims\nAll of these are refuted and need no action.\n- C06\n- C07")
+        self.assertEqual(grade._blocks(answer), ["## C01 Supported; fix now; HEAD introduced it.",
+                                                 "## Lost-ack claims All of these are refuted and need no action.",
+                                                 "- C06", "- C07"])
+        self.assertEqual(grade._evidence_binding(answer, "C01", self.INVENTORY),
+                         ("judged", "## C01 Supported; fix now; HEAD introduced it."))
+        # '- C06' is a bare label with no assertion of its own: unattributed, never a label-only judged span.
+        self.assertEqual(grade._evidence_binding(answer, "C06", self.INVENTORY)[0], "unattributed")
+
+    def test_clean_sentence_survives_a_back_reference_and_a_shared_summary_is_not_borrowed(self):
+        back_reference = "C01 is supported and must be fixed now; HEAD introduced it. C04 is the same defect as C01."
+        self.assertEqual(grade._evidence_binding(back_reference, "C01", self.INVENTORY),
+                         ("judged", "C01 is supported and must be fixed now; HEAD introduced it."))
+        self.assertEqual(grade._evidence_binding(back_reference, "C04", self.INVENTORY)[0], "unattributed")
+        summary = "C01 is supported. C02 is refuted. Overall, the defect must be fixed now."
+        self.assertEqual(grade._evidence_binding(summary, "C02", self.INVENTORY), ("judged", "C02 is refuted."))
+        self.assertEqual(grade._evidence_binding(summary, "C01", self.INVENTORY), ("judged", "C01 is supported."))
+
+    def test_heading_and_label_sections_keep_their_owned_verdict(self):
+        per_claim = "## C01\n\nSupported; fix now; HEAD introduced it.\n\n## C06\n\nRefuted; no action."
+        cases = (
+            (per_claim, "C01", "## C01 Supported; fix now; HEAD introduced it."),
+            (per_claim, "C06", "## C06 Refuted; no action."),
+            ("### C01\n- Factual: supported\n- Action: fix now\n- Introduced: yes", "C01",
+             "### C01 - Factual: supported - Action: fix now - Introduced: yes"),
+            ("**C01**:\n- supported\n- fix now", "C01", "**C01**: - supported - fix now"),
+            ("## C01, C02 and C04\n\nOne defect: supported, fix now, introduced by HEAD.", "C02",
+             "## C01, C02 and C04 One defect: supported, fix now, introduced by HEAD."),
+        )
+        for answer, claim, span in cases:
+            with self.subTest(answer=answer, claim=claim):
+                self.assertEqual(grade._evidence_binding(answer, claim, self.INVENTORY), ("judged", span))
+
+    def test_owned_section_stops_at_the_next_heading_and_claim_bearing_block(self):
+        answer = "## C01\n\nSupported; fix now.\n\n## Lost-ack claims\n\nAll of these are refuted and need no action.\n- C06\n- C07"
+        self.assertEqual(grade._evidence_binding(answer, "C01", self.INVENTORY), ("judged", "## C01 Supported; fix now."))
+        self.assertEqual(grade._evidence_binding("**C01**:\n- supported\n- C06 is refuted.", "C01", self.INVENTORY),
+                         ("judged", "**C01**: - supported"))
+
+    def test_a_claim_named_only_as_a_bare_label_is_unattributed_not_an_omission(self):
+        for answer in ("## C01\n\n## C06\n\nRefuted; no action.", "**C01**:", "- C01\n- C06 is refuted."):
+            with self.subTest(answer=answer):
+                status, reason = grade._evidence_binding(answer, "C01", self.INVENTORY)
+                self.assertEqual(status, "unattributed")
+                self.assertIn("label", reason)
+
+
+class AttributionBindingTests(unittest.IsolatedAsyncioTestCase):
+    """Exact claim-id binding through the real admission path; only the judge is faked."""
+
+    def setUp(self):
+        self.corpus_path = ROOT / "evals" / "extractor-corpus.json"
+        self.records = {record["id"]: record for record in json.loads(self.corpus_path.read_text())["records"]}
+
+    @staticmethod
+    async def _grade(answer, items, judge):
+        bundles = {("local", 1): {"keys": {"family": {"schema": 2, "items": items}}, "public_identity": {}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases, source = root / "cases.json", root / "captured.json"
+            cases.write_text(json.dumps({"cases": [{"id": "outcome", "dataset": "local", "scale": 1, "key": "family"}]}))
+            source.write_text(json.dumps({"schema": 2, "runs": [{"case": "outcome", "rep": 1, "answer": answer}]}))
+            with mock.patch.object(grade, "_fixture_keys", return_value=bundles), \
+                    mock.patch.object(grade, "_judge", side_effect=judge), \
+                    mock.patch.object(grade, "_print_table"):
+                result = await grade.grade(source, cases, ledger_path=root / "ledger.json")
+        return result["runs"][0]
+
+    async def test_retained_misattributed_repairs_are_never_judged_or_credited(self):
+        judged = []
+
+        async def judge(states, questions, timeout, concurrency):
+            judged.extend(states)
+            # Erroneous extractor: fix_now for the retained failures if it were ever shown them.
+            labels = {sid: dict(PRIOR_FAILURE) if sid in RETAINED_FAILURES else dict(self.records[sid]["gold"])
+                      for sid in states}
+            return labels, {}, _batch_record(len(states))
+
+        with mock.patch.object(grade, "_judge", mock.AsyncMock(side_effect=judge)):
+            report = await grade.validate_extractor_host(self.corpus_path)
+        self.assertFalse(set(judged) & set(RETAINED_FAILURES))
+        self.assertEqual(report["false_repairs"], [])
+        self.assertEqual(report["high_impact_false_repairs"], [])
+        statuses = {row["id"]: row["status"] for row in report["attribution"]}
+        for rid in RETAINED_FAILURES:
+            self.assertEqual(statuses[rid], "absent", rid)
+        self.assertEqual(statuses["r05"], "judged")  # explicit leading group naming the target stays admissible
+        self.assertEqual(report["unresolved_records"], [])
+        self.assertEqual(report["facets"]["action"]["accuracy"], 1.0)
+
+    async def test_absent_claim_is_omitted_without_a_judge_call_and_earns_no_repair_credit(self):
+        judged = []
+
+        async def judge(states, questions, timeout, concurrency):
+            judged.extend(state["id"] for state in states.values())
+            return {sid: dict(PRIOR_FAILURE) for sid in states}, {}, _batch_record(len(states))
+
+        row = await self._grade("C01 is supported and must be fixed now; HEAD introduced it.",
+                                [_finding("C01", "D-A"), _finding("C02", "D-B")], judge)
+        self.assertEqual(judged, ["C01"])
+        self.assertEqual(row["attribution"]["C02"]["status"], "absent")
+        self.assertEqual(row["verdicts"]["C02"], OMITTED)
+        self.assertEqual(row["repair"]["recommended_defects"], ["D-A"])
+        self.assertEqual(row["repair"]["unrecommended_defects"], ["D-B"])
+        self.assertEqual((row["repair"]["tp"], row["repair"]["fp"], row["repair"]["fn"]), (1, 0, 1))
+
+    async def test_target_named_only_in_an_unrelated_sentence_cannot_borrow_another_claims_fix(self):
+        seen = {}
+
+        async def judge(states, questions, timeout, concurrency):
+            seen.update({state["id"]: state["answer"] for state in states.values()})
+            # Erroneous extractor: fix_now whenever the text it is shown contains the C01 repair sentence.
+            labels = {sid: dict(PRIOR_FAILURE) if "fixed now" in state["answer"] else dict(OMITTED)
+                      for sid, state in states.items()}
+            return labels, {}, _batch_record(len(states))
+
+        row = await self._grade("C01 is supported and must be fixed now; HEAD introduced it. "
+                                "C02 is a separate topic and needs no decision.",
+                                [_finding("C01", "D-A"), _finding("C02", "D-B")], judge)
+        self.assertEqual(seen["C02"], "C02 is a separate topic and needs no decision.")
+        self.assertEqual(row["verdicts"]["C02"]["action"], "omitted")
+        self.assertEqual(row["repair"]["recommended_defects"], ["D-A"])
+        self.assertEqual(row["repair"]["tp"], 1)
+        self.assertEqual(row["repair"]["fp"], 0)
+
+    async def test_sentence_sharing_two_claims_is_unattributed_with_a_reason_not_affirmative_action(self):
+        judged = []
+
+        async def judge(states, questions, timeout, concurrency):
+            judged.extend(states)
+            return {sid: dict(PRIOR_FAILURE) for sid in states}, {}, _batch_record(len(states))
+
+        row = await self._grade("C01 is supported and must be fixed now; C02 is refuted.",
+                                [_finding("C01", "D-A"), _finding("C02", None, factual="refuted",
+                                                                  actions=("no_action",), introduced="no")],
+                                judge)
+        self.assertEqual(judged, [])
+        self.assertEqual(row["attribution"]["C01"]["status"], "unattributed")
+        self.assertEqual(row["errors"], {})  # deterministic attribution is not a judge failure
+        self.assertEqual(row["judge_errors"], 0)
+        self.assertTrue(row["attribution"]["C01"]["reason"].startswith("sentence naming"))
+        self.assertEqual(row["attribution"]["C02"]["status"], "unattributed")
+        self.assertEqual(row["verdicts"]["C01"], {})
+        self.assertEqual((row["repair"]["tp"], row["repair"]["fn"]), (0, 1))
+
+    async def test_explicit_leading_group_naming_the_target_is_judged_and_credited(self):
+        answer = "C01, C02 and C04 are one defect. All three are supported, must be fixed now, and HEAD introduced them."
+        seen = {}
+
+        async def judge(states, questions, timeout, concurrency):
+            seen.update({state["id"]: state["answer"] for state in states.values()})
+            return {sid: dict(PRIOR_FAILURE) for sid in states}, {}, _batch_record(len(states))
+
+        row = await self._grade(answer, [_finding("C01", "D-A"), _finding("C02", "D-A"), _finding("C04", "D-A")], judge)
+        self.assertEqual(sorted(seen), ["C01", "C02", "C04"])
+        self.assertEqual(seen["C02"], answer)
+        self.assertEqual(row["attribution"]["C02"]["status"], "judged")
+        self.assertEqual(row["errors"], {})
+        self.assertEqual(row["repair"]["recommended_defects"], ["D-A"])
+        self.assertEqual((row["repair"]["tp"], row["repair"]["fp"]), (1, 0))
+
+    async def test_valid_exact_attribution_with_two_claims_in_separate_sentences_is_unchanged(self):
+        answer = "C01 is supported and must be fixed now; HEAD introduced it. C02 is refuted and needs no action."
+
+        async def judge(states, questions, timeout, concurrency):
+            labels = {sid: dict(PRIOR_FAILURE) if state["id"] == "C01"
+                      else {"factual": "refuted", "action": "no_action", "introduced": "no"}
+                      for sid, state in states.items()}
+            return labels, {}, _batch_record(len(states))
+
+        row = await self._grade(answer, [_finding("C01", "D-A"),
+                                         _finding("C02", None, factual="refuted", actions=("no_action",), introduced="no")],
+                                judge)
+        self.assertEqual(row["errors"], {})
+        self.assertEqual(row["verdicts"]["C02"], {"factual": "refuted", "action": "no_action", "introduced": "no"})
+        self.assertEqual((row["repair"]["tp"], row["repair"]["fp"], row["repair"]["fn"]), (1, 0, 0))
 
 
 class CorpusTests(unittest.TestCase):

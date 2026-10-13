@@ -3,7 +3,9 @@
 Load in OMP's Python eval kernel and call ``await grade(paths, cases_path)``. Schema2
 keys independently describe factual truth, action under the public policy, and origin.
 Legacy Boolean keys are explicitly historical schema1, never converted into factual
-truth. Omissions and extraction failures stay in planned denominators. Repair fields are
+truth. Schema2 facets are judged only on answer text bound to the exact claim id (_evidence_binding);
+absent ids are omitted without a judge call, and ambiguous ids are unattributed (unresolved).
+Omissions and extraction failures stay in planned denominators. Repair fields are
 recommendations derived from asserted facets, not observed code repairs. Off-inventory
 claims are unknown unless an explicit audit is supplied. Per-item route metadata is kept
 only when the host streams it, and missing values stay unknown. Execution costs remain in
@@ -24,7 +26,7 @@ import uuid
 from pathlib import Path
 
 _GRADE_DIR = Path(__file__).resolve().parent
-SCORING_REVISION = "independent-facets-fixed-denominators-v1"
+SCORING_REVISION = "independent-facets-fixed-denominators-v2"
 HISTORICAL_REVISION = "historical-boolean-fixed-denominators-v2"
 HISTORICAL_LABELS = ("flagged", "cleared", "not_mentioned")
 CURRENT_EXECUTION_SCHEMAS = (3, 4, 5)
@@ -444,6 +446,175 @@ async def _judge(states, questions, timeout, concurrency):
     return labels, errors, record
 
 
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+# Lines that begin a new block: headings, list items, table rows. Blank lines also end a block.
+_BLOCK_START = re.compile(r"\s*(?:#|\||(?:[-*+]|\d+[.)])\s)")
+# Leading structural markup skipped before reading an enumerated group: bullets, quotes, emphasis, table pipes, numbering.
+_LEAD_MARKUP = re.compile(r"(?:[\s>|#*+_`-]|\d+[.)](?=\s))+")
+# Separators inside an explicit group. 'or' is deliberately absent: a disjunction is not a group.
+_GROUP_SEPARATOR = r"(?:\s*,\s*(?:(?:and|&)\s*)?|\s+and\s+|\s*&\s*)"
+
+
+def _id_family(inventory):
+    """Shared letter prefix when every id is <letters><digits> with one prefix; else None."""
+    prefixes = set()
+    for claim in inventory:
+        match = re.fullmatch(r"([A-Za-z]+)\d+", claim)
+        if match is None:
+            return None
+        prefixes.add(match.group(1))
+    return prefixes.pop() if len(prefixes) == 1 else None
+
+
+def _claim_ids_named(text, inventory, family):
+    """Every claim-id token in text: exact inventory ids plus off-inventory ids of the key's family."""
+    named = {claim for claim in inventory if re.search(rf"(?<![A-Za-z0-9_]){re.escape(claim)}(?![A-Za-z0-9_])", text)}
+    if family is not None:
+        named |= set(re.findall(rf"(?<![A-Za-z0-9_]){re.escape(family)}\d+(?![A-Za-z0-9_])", text))
+    return named
+
+
+def _token_pattern(inventory):
+    return "(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(cid) for cid in sorted(inventory, key=len, reverse=True)) + ")(?![A-Za-z0-9_])"
+
+
+def _explicit_group_member(sentence, claim, inventory):
+    """True when the sentence opens with an enumerated group of inventory ids that includes claim, and every id in it is in that group.
+
+    Accepted groups: 'C01, C02 and C04 are one defect', 'C01, C02, and C04: ...', 'C01 & C02 ...', and the same
+    after bullet, heading, emphasis, quote, or table-pipe markup. Rejected: any 'or' (a disjunction), a repeated id,
+    any id outside the leading list, and off-inventory ids (those are caught by the caller before this check).
+    """
+    token = _token_pattern(inventory)
+    markup = _LEAD_MARKUP.match(sentence)
+    body = sentence[markup.end():] if markup else sentence
+    lead = re.match(rf"({token}(?:{_GROUP_SEPARATOR}{token})+)", body)
+    if lead is None:
+        return False
+    listed = re.findall(token, lead.group(1))
+    if claim not in listed or len(set(listed)) != len(listed):
+        return False
+    return re.findall(token, sentence) == listed
+
+
+def _blocks(answer):
+    """Split an answer into blocks that bound evidence continuation.
+
+    A blank line, a heading, a list item, or a table row ends the current block, so text after a
+    paragraph break or structural marker never joins a claim's evidence. Plain lines join their block
+    as soft wraps.
+    """
+    blocks, current = [], []
+    for line in answer.splitlines():
+        if not line.strip():
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            continue
+        if current and _BLOCK_START.match(line):
+            blocks.append(" ".join(current))
+            current = []
+        current.append(line.strip())
+    if current:
+        blocks.append(" ".join(current))
+    return blocks
+
+
+def _claim_free_residue(text, inventory, family):
+    """Text left after removing claim ids, separators, and markup; empty when the text only labels claims."""
+    residue = text
+    for claim_id in _claim_ids_named(text, inventory, family):
+        residue = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(claim_id)}(?![A-Za-z0-9_])", " ", residue)
+    return re.sub(r"(?i)\band\b|[\s*_:`|#>,.&-]+", "", residue)
+
+
+def _owns_section(block, inventory, family):
+    """True for a heading, or a block that names claims with markup only (a label such as '**C01**:' or '- C06')."""
+    if block.lstrip().startswith("#"):
+        return True
+    return bool(_claim_ids_named(block, inventory, family)) and not _claim_free_residue(block, inventory, family)
+
+
+def _evidence_binding(answer, claim, inventory):
+    """Bind one answer to one claim id deterministically, before any judgment.
+
+    Returns ("judged", span). span is the claim's clean sentences: each names this claim and no other
+    inventory id except an explicit leading enumerated group that includes it (see _explicit_group_member).
+    Sentences that name another claim outside such a group, or an off-inventory id, are excluded, so the
+    judge never sees them for this claim. A clean sentence is followed by its id-free sentences only within
+    the same block (paragraph, heading, list item, or table row), and only when that block names no claim id
+    beyond the sentence's own group. A heading, or a label block holding only claim ids and markup (for example
+    '**C01**:' or '- C06'), also owns the id-free blocks after it, up to the next heading or claim-bearing block,
+    so per-claim sections keep their verdicts. A span that holds no assertion beyond claim-id markup is unattributed,
+    never judged. This binds the judge's input deterministically. It does not verify what the judge concludes, and
+    an id-free sentence in a block that names only this claim is attributed to it.
+
+    Returns ("absent", reason). The exact id does not occur; the answer asserts nothing about it.
+    Returns ("unattributed", reason). The id is outside the inventory, or every sentence naming it is
+    cross-claim or off-inventory. No verdict is admitted.
+    """
+    if claim not in inventory:
+        return "unattributed", f"claim {claim!r} is outside the answer key inventory"
+    family = _id_family(inventory)
+    block_texts = _blocks(answer)
+    owner = [_owns_section(block, inventory, family) for block in block_texts]
+    heading = [block.lstrip().startswith("#") for block in block_texts]
+    sentences = []
+    for block_index, block in enumerate(block_texts):
+        for part in _SENTENCE_BREAK.split(block):
+            if part.strip():
+                sentences.append((block_index, part.strip(), _claim_ids_named(part, inventory, family)))
+    own = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(claim)}(?![A-Za-z0-9_])")
+    hits = [index for index, (_, text, _) in enumerate(sentences) if own.search(text)]
+    if not hits:
+        others = sorted(set().union(*(named for _, _, named in sentences)))
+        return "absent", f"exact claim id {claim!r} does not occur; answer names {others or 'no claim ids'}"
+    block_named = {}
+    for block_index, _, named in sentences:
+        block_named.setdefault(block_index, set()).update(named)
+    clean, rejected = [], []
+    for index in hits:
+        _, text, named = sentences[index]
+        others = named - {claim}
+        off_inventory = sorted(other for other in others if other not in inventory)
+        if off_inventory:
+            rejected.append(f"sentence naming {claim!r} also names off-inventory id(s) {off_inventory}")
+        elif others and not _explicit_group_member(text, claim, inventory):
+            rejected.append(f"sentence naming {claim!r} also names {sorted(others)} outside an explicit group")
+        else:
+            clean.append(index)
+    if not clean:
+        return "unattributed", "; ".join(rejected)
+    selected = set()
+    for index in clean:
+        block_index, _, named = sentences[index]
+        selected.add(index)
+        if block_named[block_index] != named:
+            continue
+        following = index + 1
+        while following < len(sentences) and sentences[following][0] == block_index and not sentences[following][2]:
+            selected.add(following)
+            following += 1
+        if owner[block_index]:
+            # A heading or label owns the id-free blocks after it, up to the next heading or claim-bearing block.
+            while following < len(sentences) and not sentences[following][2] and not heading[sentences[following][0]]:
+                selected.add(following)
+                following += 1
+    span = " ".join(sentences[index][1] for index in sorted(selected))
+    if not _claim_free_residue(span, inventory, family):
+        return "unattributed", f"claim {claim!r} is named only as a label; its section holds no assertion"
+    return "judged", span
+
+
+def _refund_claim_inventory():
+    """Claim ids of the refund/retry key the corpus extractor is measured against."""
+    path = _GRADE_DIR / "refund_retry_fixture.py"
+    module = types.ModuleType("jevify_refund_retry_fixture")
+    module.__file__ = str(path)
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+    return {item["id"] for item in module.answer_keys()["items"]}
+
+
 def _captured_answers(run):
     """Historical runs contain one answer; current runs retain each retry attempt separately."""
     attempts = run.get("attempt_records")
@@ -657,14 +828,29 @@ async def validate_extractor_host(corpus_path, *, timeout=1800, concurrency=4, o
     snapshot = Path(corpus_path).read_bytes()
     corpus = json.loads(snapshot.decode("utf-8"))
     records = _validate_corpus(corpus)
-    # Keys are unique record ids; each state carries the claim id production grading sends.
-    states = {record["id"]: {"answer": record["answer"].strip(), "id": record["claim"], "item": record["item"]}
-              for record in records}
-    labels, failures, batch = await _judge(states, FACET_QUESTIONS, timeout, concurrency)
+    inventory = frozenset(_refund_claim_inventory())
+    outside = sorted({record["claim"] for record in records} - inventory)
+    if outside:
+        raise ValueError(f"extractor corpus claims outside the refund key inventory: {outside}")
+    # Keys are unique record ids. Only judged records reach the host; absent and unattributed records never do.
+    attribution, states, labels = [], {}, {}
+    for record in records:
+        rid = record["id"]
+        status, detail = _evidence_binding(record["answer"].strip(), record["claim"], inventory)
+        attribution.append({"id": rid, "claim": record["claim"], "status": status,
+                            "reason": None if status == "judged" else detail})
+        if status == "judged":
+            states[rid] = {"answer": detail, "id": record["claim"], "item": record["item"]}
+        elif status == "absent":
+            labels[rid] = {facet: "omitted" for facet in FACET_LABELS}
+    judged, judge_failures, batch = await _judge(states, FACET_QUESTIONS, timeout, concurrency)
+    labels.update(judged)
     provenance = batch.pop("provenance", {})
-    report = validate_extractor(corpus, {rid: labels.get(rid, {}) for rid in states})
+    report = validate_extractor(corpus, {record["id"]: labels.get(record["id"], {}) for record in records})
+    report["attribution"] = attribution
     report["extraction"] = {"corpus": str(corpus_path), "corpus_sha256": _bytes_digest(snapshot), "batch": batch,
-                            "failed_states": sorted(failures), "provenance": {rid: provenance.get(rid) for rid in states}}
+                            "failed_states": sorted(judge_failures),
+                            "provenance": {record["id"]: provenance.get(record["id"]) for record in records}}
     if out_path is not None:
         with Path(out_path).open("x") as handle:
             handle.write(json.dumps(report, indent=1) + "\n")
@@ -993,12 +1179,25 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
                                          "answer_index": capture["answer_index"]},
                        "answer_sha256": _digest(answer), "key_identity": identities[run["case"]],
                        "key_binding": key_bindings[run["case"]],
-                       "verdicts": {}, "errors": {}, "extraction_inputs": {}, "extraction_provenance": {}}
+                       "verdicts": {}, "errors": {}, "attribution": {}, "extraction_inputs": {}, "extraction_provenance": {}}
+                key_inventory = frozenset(item["id"] for item in key["items"])
                 for item in key["items"]:
                     if not answer:
                         row["verdicts"][item["id"]] = {facet: "omitted" for facet in FACET_LABELS} if schema == 2 else "not_mentioned"
                         continue
-                    state = {"answer": answer, "id": item["id"], "item": item["desc"]}
+                    text = answer
+                    if schema == 2:
+                        status, detail = _evidence_binding(answer, item["id"], key_inventory)
+                        row["attribution"][item["id"]] = {"status": status, "reason": None if status == "judged" else detail}
+                        if status == "absent":
+                            row["verdicts"][item["id"]] = {facet: "omitted" for facet in FACET_LABELS}
+                            continue
+                        if status == "unattributed":
+                            # Deterministic attribution outcome, not a judge failure: unresolved via the empty verdict and attribution reason.
+                            row["verdicts"][item["id"]] = {}
+                            continue
+                        text = detail
+                    state = {"answer": text, "id": item["id"], "item": item["desc"]}
                     if schema == 1:
                         state["flag_label"] = key["flag_label"]
                     sid = str(len(states[schema]))

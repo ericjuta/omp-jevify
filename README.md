@@ -107,12 +107,33 @@ Release verification: [retained smoke evidence](evals/results/release-v0.3.0-smo
 records 281 passing tests, real kernel-loss recovery without resubmission, source-bound
 review, grouped exclusions, calibration, recipes, and isolated grading launches.
 The direct-versus-flat comparison is **inconclusive** (one independent outcome case).
-The 18-record synthetic extractor check produced four high-impact false recommendations;
+The 18-record synthetic extractor check made four identity-misattribution errors: it
+applied a fix-now verdict stated for another claim ID (off-inventory, inexact, or outside
+an explicit group) to a claim the answer never named. Against the fixture's source truth
+that is two unwarranted repairs (r03 → refuted C07, r06 → refuted C06) and two unearned
+credits (r02 → C02, r04 → C01, true defects credited without an exact-ID mention). The
+retained report lists all four under its historical `high_impact_false_repairs` field;
 source review remains required. These observations establish exercised paths, not a
 quality or savings advantage. Host provenance and exhaustive billing remain unknown.
 Recovery is **not exactly-once execution**: an orphaned submission may still bill.
 Reattachment requires a surviving batch in the owning OMP session; it does not survive
 host process or session loss.
+
+### Post-release extractor correction
+
+The evaluation grader now binds extraction to exact claim IDs and bounded answer
+excerpts before judging. Missing IDs are recorded as omitted; ambiguous attribution
+stays unresolved and grants no repair credit. Explicit groups remain valid when they
+unambiguously include the target. Ordinary paragraph boundaries stop continuation;
+claim headings and labels retain their own body up to the next heading or claim-bearing
+block. Bare labels without assertions stay unresolved. Attribution rejections are
+separate from judge failures.
+
+This changes the scoring revision, not the historical v0.3.0 results. It constrains
+judge input; it does not prove the judge's interpretation is correct. Assigning ID-free
+prose to the preceding single-claim block or owned section is still a heuristic, so
+source review remains necessary. This correction is evaluation tooling, not a new
+plugin runtime.
 
 ## Requirements
 
