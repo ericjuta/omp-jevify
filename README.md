@@ -24,7 +24,7 @@ permission to edit. It generalises Can Bölük's Jevict
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.3.0'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.3.1'
 ```
 
 To replace an existing installation with this version, add `--force` to the command.
@@ -73,6 +73,16 @@ It does not expose selected/response model, fallback or cache-hit provenance. Th
 marks missing provenance `provenance_unknown`; a model label or a change in that label
 does not establish fallback or a cache hit. Treat unknown provenance as unresolved,
 not as evidence that the primary model answered.
+
+## Current release: 0.3.1
+
+0.3.1 is a tagged checkpoint of the corrected evaluation grader (`9109a59`, `cb9aacd`;
+scoring revision `independent-facets-fixed-denominators-v3`). It adds no plugin runtime
+capability. Behavioral changes are confined to evaluation grading; the skill and helper
+files match 0.3.0 apart from the version field, so no migration is needed. See
+the [post-release extractor correction](#post-release-extractor-correction) below and
+the [v0.3.1 release notes](https://github.com/ericjuta/omp-jevify/releases/tag/v0.3.1).
+The 0.3.0 evidence below remains historical and unchanged.
 
 ## Upgrading to 0.3.0
 
