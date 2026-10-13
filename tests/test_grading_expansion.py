@@ -358,6 +358,52 @@ class EvidenceBindingTests(unittest.TestCase):
         self.assertEqual(grade._evidence_binding("**C01**:\n- supported\n- C06 is refuted.", "C01", self.INVENTORY),
                          ("judged", "**C01**: - supported"))
 
+    def test_owned_section_never_absorbs_a_later_block_that_names_another_claim(self):
+        leak = "## C06\n\nRefuted; no action.\n\nThis double settlement must be fixed now. See C07."
+        self.assertEqual(grade._evidence_binding(leak, "C06", self.INVENTORY), ("judged", "## C06 Refuted; no action."))
+        # The id-free sentence that opened the C07 block is excluded from C07's span, which keeps only its own sentence.
+        self.assertEqual(grade._evidence_binding(leak, "C07", self.INVENTORY), ("judged", "See C07."))
+        label = "**C01**:\n- supported\n\nThis must be fixed now. C06 is refuted."
+        self.assertEqual(grade._evidence_binding(label, "C01", self.INVENTORY), ("judged", "**C01**: - supported"))
+        ordered = "## C01\n\nSupported; fix now.\n\nAlso fix now.\n\nC06 is refuted."
+        self.assertEqual(grade._evidence_binding(ordered, "C01", self.INVENTORY),
+                         ("judged", "## C01 Supported; fix now. Also fix now."))
+
+    def test_owned_section_keeps_a_later_block_naming_only_the_target_claim(self):
+        same = "## C01\n\nSupported by the diff. Must be fixed now. C01 was introduced by HEAD."
+        self.assertEqual(grade._evidence_binding(same, "C01", self.INVENTORY),
+                         ("judged", "## C01 Supported by the diff. Must be fixed now. C01 was introduced by HEAD."))
+        # Ownership is per target: a C01-only block under a group heading is foreign to C02.
+        group = "## C01, C02 and C04\n\nOne defect: supported, fix now.\n\nSeparately, C01 needs no action."
+        self.assertEqual(grade._evidence_binding(group, "C02", self.INVENTORY),
+                         ("judged", "## C01, C02 and C04 One defect: supported, fix now."))
+        self.assertEqual(grade._evidence_binding(group, "C01", self.INVENTORY),
+                         ("judged", "## C01, C02 and C04 One defect: supported, fix now. Separately, C01 needs no action."))
+
+    def test_per_id_bold_and_code_groups_are_judged_and_negative_controls_stay_unattributed(self):
+        forms = (
+            ("**C01**, **C02**, and **C04**: one defect; supported, fix now, introduced by HEAD.", "C02"),
+            ("`C01`, `C02` and `C04`: one defect; supported, fix now, introduced by HEAD.", "C04"),
+            ("**C01**, `C02`, and **C04**: one defect; supported, fix now, introduced by HEAD.", "C04"),
+        )
+        for answer, claim in forms:
+            with self.subTest(answer=answer, claim=claim):
+                self.assertEqual(grade._evidence_binding(answer, claim, self.INVENTORY), ("judged", answer))
+        negatives = (
+            ("**C06** or **C07** is a second settlement that must be fixed now; HEAD introduced it.", "C06",
+             "outside an explicit group"),
+            ("**C01**, **C02** and **C99** are one defect; fix now.", "C01", "off-inventory"),
+            ("**C01**, **C02** and **C01** are one defect; fix now.", "C01", "outside an explicit group"),
+            ("**C01**, **C02** and **C04** are one defect; C06 is refuted.", "C01", "outside an explicit group"),
+            # Delimiter glued to other text is not a wrapper.
+            ("`C01`A, C02 and C04 are one defect; fix now.", "C01", "outside an explicit group"),
+        )
+        for answer, claim, reason in negatives:
+            with self.subTest(answer=answer, claim=claim):
+                status, detail = grade._evidence_binding(answer, claim, self.INVENTORY)
+                self.assertEqual(status, "unattributed")
+                self.assertIn(reason, detail)
+
     def test_a_claim_named_only_as_a_bare_label_is_unattributed_not_an_omission(self):
         for answer in ("## C01\n\n## C06\n\nRefuted; no action.", "**C01**:", "- C01\n- C06 is refuted."):
             with self.subTest(answer=answer):
@@ -495,6 +541,66 @@ class AttributionBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["errors"], {})
         self.assertEqual(row["verdicts"]["C02"], {"factual": "refuted", "action": "no_action", "introduced": "no"})
         self.assertEqual((row["repair"]["tp"], row["repair"]["fp"], row["repair"]["fn"]), (1, 0, 0))
+
+    async def test_rejected_attribution_is_unresolved_not_an_extraction_error_and_earns_no_credit(self):
+        judged = []
+
+        async def judge(states, questions, timeout, concurrency):
+            judged.extend(state["id"] for state in states.values())
+            # The judge answers C01's factual and introduced facets but fails its action facet.
+            labels = {sid: {"factual": "supported", "introduced": "yes"} for sid in states}
+            return labels, {sid: {"action": "extraction failed"} for sid in states}, _batch_record(len(states))
+
+        row = await self._grade("C01 is supported and must be fixed now; HEAD introduced it. "
+                                "C02 is supported and must be fixed now; C03 is refuted.",
+                                [_finding("C01", "D-A"), _finding("C02", "D-B"),
+                                 _finding("C03", "D-C", factual="refuted", actions=("no_action",), introduced="no"),
+                                 _finding("C04", "D-D")],
+                                judge)
+        self.assertEqual(judged, ["C01"])
+        self.assertEqual({iid: record["status"] for iid, record in row["attribution"].items()},
+                         {"C01": "judged", "C02": "unattributed", "C03": "unattributed", "C04": "absent"})
+        self.assertEqual(row["errors"], {"C01": {"action": "extraction failed"}})
+        self.assertEqual(row["judge_errors"], 1)
+        self.assertEqual(row["unattributed_items"], 2)
+        for facet in ("factual", "action", "introduced"):
+            with self.subTest(facet=facet):
+                metrics = row["facets"][facet]
+                self.assertEqual((metrics["planned"], metrics["unattributed"], metrics["omitted"]), (4, 2, 1))
+                self.assertEqual(metrics["extraction_errors"], 1 if facet == "action" else 0)
+        self.assertEqual(row["facets"]["factual"]["correct"], 1)
+        self.assertEqual(row["repair"]["recommended_defects"], [])
+        self.assertEqual((row["repair"]["tp"], row["repair"]["fp"], row["repair"]["fn"]), (0, 0, 3))
+        summary = grade.summarize_graded([row])["by_key_schema"]["2"]
+        self.assertEqual((summary["judge_errors"], summary["unattributed"]), (1, 2))
+
+
+class ScoreAccountingTests(unittest.TestCase):
+    ITEMS = [_finding("C01", "D-A"), _finding("C02", "D-B"), _finding("C03", "D-C"), _finding("C04", "D-D")]
+
+    def test_omitted_rejected_and_failed_facets_are_separate_with_fixed_denominators(self):
+        verdicts = {"C01": dict(PRIOR_FAILURE), "C02": dict(OMITTED),
+                    "C04": {"factual": "supported", "action": "fix_now", "introduced": "yes"}}
+        errors = {"C03": {facet: "extraction failed" for facet in ("factual", "action", "introduced")}}
+        score = grade.score_facets(self.ITEMS, verdicts, errors, unattributed=["C01"])
+        for facet in ("factual", "action", "introduced"):
+            with self.subTest(facet=facet):
+                metrics = score["facets"][facet]
+                self.assertEqual(metrics["planned"], 4)
+                self.assertEqual((metrics["omitted"], metrics["unattributed"], metrics["extraction_errors"],
+                                  metrics["unresolved"]), (1, 1, 1, 2))
+        self.assertEqual(score["facets"]["factual"]["correct"], 1)
+        self.assertEqual((score["unattributed_items"], score["unresolved_items"]), (1, 2))
+        # The injected fix_now for the rejected C01 earns no credit; only the judged C04 is recommended.
+        self.assertEqual(score["repair"]["recommended_defects"], ["D-D"])
+        self.assertEqual((score["repair"]["tp"], score["repair"]["fp"], score["repair"]["fn"]), (1, 0, 3))
+
+    def test_standalone_scoring_without_attribution_counts_every_gap_as_an_extraction_error(self):
+        score = grade.score_facets(self.ITEMS, {"C04": {"factual": "supported", "action": "fix_now", "introduced": "yes"}})
+        for facet in ("factual", "action", "introduced"):
+            with self.subTest(facet=facet):
+                self.assertEqual((score["facets"][facet]["extraction_errors"], score["facets"][facet]["unattributed"]), (3, 0))
+        self.assertEqual(score["unattributed_items"], 0)
 
 
 class CorpusTests(unittest.TestCase):

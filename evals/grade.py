@@ -5,7 +5,8 @@ keys independently describe factual truth, action under the public policy, and o
 Legacy Boolean keys are explicitly historical schema1, never converted into factual
 truth. Schema2 facets are judged only on answer text bound to the exact claim id (_evidence_binding);
 absent ids are omitted without a judge call, and ambiguous ids are unattributed (unresolved).
-Omissions and extraction failures stay in planned denominators. Repair fields are
+Omissions, deterministic attribution rejections (unattributed), and extraction failures all stay in planned
+denominators; only extraction failures count as extraction_errors. Repair fields are
 recommendations derived from asserted facets, not observed code repairs. Off-inventory
 claims are unknown unless an explicit audit is supplied. Per-item route metadata is kept
 only when the host streams it, and missing values stay unknown. Execution costs remain in
@@ -26,7 +27,7 @@ import uuid
 from pathlib import Path
 
 _GRADE_DIR = Path(__file__).resolve().parent
-SCORING_REVISION = "independent-facets-fixed-denominators-v2"
+SCORING_REVISION = "independent-facets-fixed-denominators-v3"
 HISTORICAL_REVISION = "historical-boolean-fixed-denominators-v2"
 HISTORICAL_LABELS = ("flagged", "cleared", "not_mentioned")
 CURRENT_EXECUTION_SCHEMAS = (3, 4, 5)
@@ -191,29 +192,39 @@ def score_items(truth, verdicts, errors=None):
             "omitted": sum(label == "not_mentioned" for label in labels.values())}
 
 
-def score_facets(items, verdicts, errors=None):
+def score_facets(items, verdicts, errors=None, unattributed=()):
     """Score independent facets; only evidence-backed definite repairs earn recommendation credit.
 
     Repeated claims about one defect count once. If any selected repair claim for that
     defect is false, unresolved, or misattributed, the candidate is not a justified
     recommendation. Unselected duplicates cannot increase recall or conceal a spurious
     selection. These are scores of asserted facets; no code repair was observed.
+
+    unattributed names items whose attribution was deterministically rejected (_evidence_binding).
+    Any verdict supplied for them is ignored; they stay unresolved in every denominator and are
+    counted as unattributed, not as extraction_errors. Every other missing or invalid facet is an
+    extraction error, so a caller that supplies no attribution reports all gaps as failures.
     """
     errors = errors or {}
+    rejected = set(unattributed)
     facets = {}
     normalized = {}
     for item in items:
         iid = item["id"]
+        if iid in rejected:
+            normalized[iid] = dict.fromkeys(FACET_LABELS)
+            continue
         extracted = verdicts.get(iid) or {}
         failures = errors.get(iid) or {}
         normalized[iid] = {facet: extracted.get(facet) if not failures or isinstance(failures, dict) and facet not in failures else None
                            for facet in FACET_LABELS}
     for facet, choices in FACET_LABELS.items():
-        correct = covered = omitted = unresolved = 0
+        correct = covered = omitted = unresolved = rejected_count = 0
         for item in items:
             value = normalized[item["id"]][facet]
             if value not in choices:
                 unresolved += 1
+                rejected_count += item["id"] in rejected
             elif value == "omitted":
                 omitted += 1
             else:
@@ -224,7 +235,8 @@ def score_facets(items, verdicts, errors=None):
         uncertain = {"factual": "underdetermined", "action": "investigate", "introduced": "unknown"}[facet]
         facets[facet] = {"planned": planned, "correct": correct, "accuracy": correct / planned if planned else None,
                          "covered": covered, "coverage": covered / planned if planned else None,
-                         "omitted": omitted, "extraction_errors": unresolved, "unresolved": unresolved,
+                         "omitted": omitted, "extraction_errors": unresolved - rejected_count,
+                         "unattributed": rejected_count, "unresolved": unresolved,
                          "asserted_uncertain": sum(decision[facet] == uncertain for decision in normalized.values()),
                          "key_uncertain": sum(uncertain in item["actions"] if facet == "action" else item[facet] == uncertain for item in items)}
     expected_defects = {item["defect"] for item in items if "fix_now" in item["actions"]}
@@ -253,6 +265,7 @@ def score_facets(items, verdicts, errors=None):
             **{f"{facet}_{metric}": values[metric] for facet, values in facets.items() for metric in ("accuracy", "coverage")},
             **{field: repair[field] for field in ("tp", "fp", "fn", "recall", "precision", "false_flags")},
             "repair": repair, "unresolved_items": unresolved_items,
+            "unattributed_items": sum(item["id"] in rejected for item in items),
             "unresolved_facets": sum(values["unresolved"] for values in facets.values()),
             "evidence_unresolved_items": [item["id"] for item in items
                                           if item["factual"] == "underdetermined" or item["introduced"] == "unknown"]}
@@ -278,6 +291,7 @@ def summarize_graded(runs):
                             for field in ("factual_accuracy", "action_accuracy", "introduced_accuracy",
                                           "factual_coverage", "action_coverage", "introduced_coverage")})
             summary["unresolved"] = sum(row["unresolved_items"] for row in selected)
+            summary["unattributed"] = sum(row["unattributed_items"] for row in selected)
             summary["evidence_unresolved"] = sum(len(row["evidence_unresolved_items"]) for row in selected)
         else:
             summary["accuracy"] = _mean(row["accuracy"] for row in selected)
@@ -482,10 +496,14 @@ def _explicit_group_member(sentence, claim, inventory):
     """True when the sentence opens with an enumerated group of inventory ids that includes claim, and every id in it is in that group.
 
     Accepted groups: 'C01, C02 and C04 are one defect', 'C01, C02, and C04: ...', 'C01 & C02 ...', and the same
-    after bullet, heading, emphasis, quote, or table-pipe markup. Rejected: any 'or' (a disjunction), a repeated id,
-    any id outside the leading list, and off-inventory ids (those are caught by the caller before this check).
+    after bullet, heading, emphasis, quote, or table-pipe markup, including per-id emphasis or inline code
+    ('**C01**, **C02**, and **C04**: ...', '`C01`, `C02` and `C04`: ...'). Rejected: any 'or' (a disjunction),
+    a repeated id, any id outside the leading list, and off-inventory ids (those are caught by the caller before this check).
     """
     token = _token_pattern(inventory)
+    ids = "|".join(re.escape(cid) for cid in sorted(inventory, key=len, reverse=True))
+    # One matching '**', '*', or '`' pair wrapping exactly one inventory id is markup; the id keeps its token boundaries.
+    sentence = re.sub(rf"(?<![A-Za-z0-9_*`])(\*\*|\*|`)({ids})\1(?![A-Za-z0-9_*`])", r"\2", sentence)
     markup = _LEAD_MARKUP.match(sentence)
     body = sentence[markup.end():] if markup else sentence
     lead = re.match(rf"({token}(?:{_GROUP_SEPARATOR}{token})+)", body)
@@ -544,8 +562,11 @@ def _evidence_binding(answer, claim, inventory):
     judge never sees them for this claim. A clean sentence is followed by its id-free sentences only within
     the same block (paragraph, heading, list item, or table row), and only when that block names no claim id
     beyond the sentence's own group. A heading, or a label block holding only claim ids and markup (for example
-    '**C01**:' or '- C06'), also owns the id-free blocks after it, up to the next heading or claim-bearing block,
-    so per-claim sections keep their verdicts. A span that holds no assertion beyond claim-id markup is unattributed,
+    '**C01**:' or '- C06'), also owns the following blocks that name no claim id or name only this exact claim, up to
+    the next heading or the next foreign-claim block (one naming any other claim id anywhere in it, even after
+    id-free sentences). Ownership is per target, so a group heading does not attribute one member's block to
+    another member, and per-claim sections keep their verdicts without absorbing another claim's block. A span
+    that holds no assertion beyond claim-id markup is unattributed,
     never judged. This binds the judge's input deterministically. It does not verify what the judge concludes, and
     an id-free sentence in a block that names only this claim is attributed to it.
 
@@ -596,8 +617,10 @@ def _evidence_binding(answer, claim, inventory):
             selected.add(following)
             following += 1
         if owner[block_index]:
-            # A heading or label owns the id-free blocks after it, up to the next heading or claim-bearing block.
-            while following < len(sentences) and not sentences[following][2] and not heading[sentences[following][0]]:
+            # A heading or label owns later blocks naming no claim or only this claim, up to the next heading or a
+            # foreign-claim block (one naming any other claim id).
+            while (following < len(sentences) and not block_named[sentences[following][0]] - {claim}
+                   and not heading[sentences[following][0]]):
                 selected.add(following)
                 following += 1
     span = " ".join(sentences[index][1] for index in sorted(selected))
@@ -1245,8 +1268,12 @@ async def grade(results_path, cases_path, out_path=None, *, timeout=1800, concur
     for (path, meta, execution_runs, planned, control_rows), target in zip(files, targets):
         graded = []
         for row, key in planned:
-            score = score_facets(key["items"], row["verdicts"], row["errors"]) if row["key_schema"] == 2 else score_items(
-                {item["id"]: item["flag"] for item in key["items"]}, row["verdicts"], row["errors"])
+            if row["key_schema"] == 2:
+                # Deterministic attribution rejections are unresolved, not extraction failures; read from row attribution.
+                rejected = [iid for iid, record in row["attribution"].items() if record["status"] == "unattributed"]
+                score = score_facets(key["items"], row["verdicts"], row["errors"], rejected)
+            else:
+                score = score_items({item["id"]: item["flag"] for item in key["items"]}, row["verdicts"], row["errors"])
             row.update(score)
             row["judge_errors"] = len(row["errors"])
             row["off_inventory"] = off_inventory_boundary(off_inventory, row["answer_sha256"])
