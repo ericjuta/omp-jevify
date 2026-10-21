@@ -2,7 +2,7 @@
 name: jevify
 description: "Assess suitability when the user says jevify or asks to use Jev, when the host jevify notice fires, or for repeated independent semantic classifications that deterministic tools cannot decide. Choose a method first; neither item count, the host notice nor loading this skill requires judgment. Not for summaries, counts or plain edits."
 metadata:
-  version: 0.3.1
+  version: 0.4.0
 ---
 
 # Jevify
