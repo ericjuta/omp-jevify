@@ -37,6 +37,14 @@ GENEROUS = {"total_budget": 10**6, "single_budget": 10**6, "headroom": 0, "frami
             "sizer": exact_sizer}
 
 SOURCE_TEXT = "def a():\n    return 1\n\ndef b():\n    return 2\n"
+HUMAN = {"kind": "human", "id": "reviewer-1"}
+POLICY = jv.policy(QUESTIONS, {"severity": {"top": 0.5}})
+
+
+def _scratch(testcase):
+    temporary = tempfile.TemporaryDirectory()
+    testcase.addCleanup(temporary.cleanup)
+    return Path(temporary.name)
 
 
 def _quiet(testcase):
@@ -262,74 +270,104 @@ class ReviewTests(unittest.TestCase):
     def setUp(self):
         _quiet(self)
         self.root = _source_tree(self)
+        self.home = _scratch(self)
+        self.path = self.home / "review"
         self.units = {"a.py:1": _units()["a.py:1"], "b.py:1": dict(_units()["b.py:1"], text="short")}
         self.states = {"a.py:1": "def a():", "b.py:1": "short"}
         self.manifest = jv.extraction(self.units, self.states, root=self.root)
-        self.policy = {"escalate": "confirmed-only"}
-        self.review = jv.review_queue(
-            self.manifest,
+        jv.review_queue(
+            self.path, self.manifest,
             {"f1": {"unit": "a.py:1", "claim": "a is a stub"},
              "f2": {"unit": "b.py:1", "claim": "b is dead code"}},
-            policy=self.policy, root=self.root)
+            Q=QUESTIONS, policy=POLICY, root=self.root)
+
+    def _decision(self, item_id, verdict, *, evidence=None, note=None):
+        binding = jv.review_questions(self.path, Q=QUESTIONS)["bindings"][item_id]
+        if evidence is None and verdict != "unresolved":
+            evidence = [binding["citation"]]
+        decision = {"item": item_id, "fingerprint": binding["fingerprint"], "view": binding["view"],
+                    "verdict": verdict}
+        if evidence is not None:
+            decision["evidence"] = evidence
+        if note is not None:
+            decision["note"] = note
+        return decision
 
     def test_confirmation_requires_evidence_and_records_the_cited_quote(self):
         with self.assertRaises(ValueError):
-            jv.adjudicate(self.review, "f1", "confirmed")
-        jv.adjudicate(self.review, "f1", "confirmed",
-                      evidence=[{"file": "a.py", "start": 1, "end": 2}], note="reads ok")
-        entry = self.review["items"]["f1"]
-        self.assertEqual(entry["verdict"], "confirmed")
-        self.assertEqual(entry["evidence"][0]["quote"], "def a():\n    return 1")
-        self.assertEqual(jv.review_status(self.review)["pending"], ["f2"])
+            jv.adjudicate(self.path, [self._decision("f1", "confirmed", evidence=[])],
+                          Q=QUESTIONS, reviewer=HUMAN)
+        jv.adjudicate(self.path, [self._decision("f1", "confirmed", note="reads ok")],
+                      Q=QUESTIONS, reviewer=HUMAN)
+        items = {entry["item"]: entry for entry in jv.review_items(self.path, Q=QUESTIONS)}
+        self.assertEqual(items["f1"]["verdict"], "confirmed")
+        self.assertEqual(items["f1"]["excerpt"]["quote"], "def a():\n    return 1")
+        self.assertEqual(items["f1"]["history"][0]["reviewer"], HUMAN)
+        self.assertEqual(jv.review_status(self.path, Q=QUESTIONS)["pending"], ["f2"])
 
     def test_evidence_from_a_changed_source_is_refused_and_nothing_is_recorded(self):
+        decision = self._decision("f1", "confirmed")
         (self.root / "a.py").write_text("changed\n", encoding="utf-8")
-        with self.assertRaises(ValueError):
-            jv.adjudicate(self.review, "f1", "confirmed",
-                          evidence=[{"file": "a.py", "start": 1, "end": 1}])
-        self.assertEqual(self.review["items"]["f1"]["verdict"], "pending")
+        with self.assertRaises(jv.ReviewRefused) as caught:
+            jv.adjudicate(self.path, [decision], Q=QUESTIONS, reviewer=HUMAN)
+        self.assertEqual([problem["reason"] for problem in caught.exception.problems], ["stale_source"])
+        self.assertEqual(jv.review_status(self.path, Q=QUESTIONS)["pending"], ["f1", "f2"])
 
     def test_unresolved_needs_no_evidence_and_unknown_verdicts_are_refused(self):
-        jv.adjudicate(self.review, "f2", "unresolved")
-        self.assertEqual(jv.review_status(self.review)["unresolved"], 1)
+        jv.adjudicate(self.path, [self._decision("f2", "unresolved")], Q=QUESTIONS, reviewer=HUMAN)
+        self.assertEqual(jv.review_status(self.path, Q=QUESTIONS)["unresolved"], ["f2"])
         with self.assertRaises(ValueError):
-            jv.adjudicate(self.review, "f1", "maybe")
+            jv.adjudicate(self.path, [self._decision("f1", "maybe")], Q=QUESTIONS, reviewer=HUMAN)
 
     def test_evidence_outside_the_snapshot_is_refused(self):
-        with self.assertRaises(ValueError):
-            jv.adjudicate(self.review, "f1", "overturned",
-                          evidence=[{"file": "missing.py", "start": 1, "end": 1}])
-        with self.assertRaises(ValueError):
-            jv.adjudicate(self.review, "f1", "overturned",
-                          evidence=[{"file": "a.py", "start": 1, "end": 50}])
+        for citation in ({"file": "missing.py", "start": 1, "end": 1}, {"file": "a.py", "start": 1, "end": 50}):
+            with self.assertRaises(ValueError):
+                jv.adjudicate(self.path, [self._decision("f1", "overturned", evidence=[citation])],
+                              Q=QUESTIONS, reviewer=HUMAN)
+        self.assertEqual(jv.review_status(self.path, Q=QUESTIONS)["pending"], ["f1", "f2"])
 
     def test_policy_identity_follows_the_frozen_policy(self):
-        same = jv.review_queue(self.manifest, {"f1": {"unit": "a.py:1", "claim": "x"}},
-                               policy={"escalate": "confirmed-only"}, root=self.root)
-        other = jv.review_queue(self.manifest, {"f1": {"unit": "a.py:1", "claim": "x"}},
-                                policy={"escalate": "any"}, root=self.root)
-        self.assertEqual(self.review["policy_digest"], same["policy_digest"])
-        self.assertNotEqual(self.review["policy_digest"], other["policy_digest"])
+        status = jv.review_status(self.path, Q=QUESTIONS)
+        items = {"f1": {"unit": "a.py:1", "claim": "x"}}
+        same = jv.review_queue(self.home / "same", self.manifest, items, Q=QUESTIONS, policy=POLICY,
+                               root=self.root)
+        other = jv.review_queue(self.home / "other", self.manifest, items, Q=QUESTIONS,
+                                policy=jv.policy(QUESTIONS, {"severity": {"top": 0.9}}), root=self.root)
+        self.assertEqual(status["policy_digest"], same["policy_digest"])
+        self.assertNotEqual(status["policy_digest"], other["policy_digest"])
 
-    def test_queue_refuses_units_absent_from_the_manifest(self):
+    def test_queue_refuses_unknown_units_and_policies_bound_to_another_rubric(self):
         with self.assertRaises(ValueError):
-            jv.review_queue(self.manifest, {"f1": {"unit": "nope.py:1", "claim": "x"}},
-                            policy=self.policy, root=self.root)
+            jv.review_queue(self.home / "unit", self.manifest, {"f1": {"unit": "nope.py:1", "claim": "x"}},
+                            Q=QUESTIONS, policy=POLICY, root=self.root)
+        other_rubric = {"severity": jv.choice("A different question?", low="minor", high="blocking")}
+        with self.assertRaises(ValueError):
+            jv.review_queue(self.home / "rubric", self.manifest, {"f1": {"unit": "a.py:1", "claim": "x"}},
+                            Q=other_rubric, policy=POLICY, root=self.root)
 
 
 class DeletionGuardTests(unittest.TestCase):
     def setUp(self):
         _quiet(self)
         self.root = _source_tree(self)
+        self.home = _scratch(self)
+        self.path = self.home / "review"
         self.units = {"a.py:1": {"file": "a.py", "line": 1, "end_line": 2},
                       "a.py:4": {"file": "a.py", "line": 4, "end_line": 5}}
         self.states = {"a.py:1": "def a():", "a.py:4": "def b():"}
         self.manifest = jv.extraction(self.units, self.states, root=self.root)
-        self.review = jv.review_queue(
-            self.manifest,
+        jv.review_queue(
+            self.path, self.manifest,
             {"f1": {"unit": "a.py:1", "claim": "a is a stub"},
              "f2": {"unit": "a.py:4", "claim": "b is a stub"}},
-            policy={"escalate": "confirmed-only"}, root=self.root)
+            Q=QUESTIONS, policy=POLICY, root=self.root)
+
+    def _decide(self, item_id, verdict, citation=None):
+        binding = jv.review_questions(self.path, Q=QUESTIONS)["bindings"][item_id]
+        evidence = [] if verdict == "unresolved" else [citation]
+        return jv.adjudicate(self.path, [{"item": item_id, "fingerprint": binding["fingerprint"],
+                                          "view": binding["view"], "verdict": verdict,
+                                          "evidence": evidence}], Q=QUESTIONS, reviewer=HUMAN)
 
     def _delete(self, ids, **kwargs):
         return jv.delete_spans(self.units, ids, root=self.root, dry_run=False,
@@ -342,34 +380,38 @@ class DeletionGuardTests(unittest.TestCase):
         self.assertEqual((self.root / "a.py").read_text(encoding="utf-8"), "changed\n")
 
     def test_pending_review_refuses_deletion(self):
-        jv.adjudicate(self.review, "f1", "confirmed", evidence=[{"file": "a.py", "start": 1, "end": 2}])
+        self._decide("f1", "confirmed", {"file": "a.py", "start": 1, "end": 2})
         with self.assertRaises(ValueError):
-            self._delete(["a.py:1"], review=self.review)
+            self._delete(["a.py:1"], review=self.path, Q=QUESTIONS)
         self.assertEqual((self.root / "a.py").read_text(encoding="utf-8"), SOURCE_TEXT)
 
     def test_target_without_a_confirmed_decision_refuses_deletion(self):
-        jv.adjudicate(self.review, "f1", "unresolved")
-        jv.adjudicate(self.review, "f2", "confirmed", evidence=[{"file": "a.py", "start": 4, "end": 5}])
+        self._decide("f1", "unresolved")
+        self._decide("f2", "confirmed", {"file": "a.py", "start": 4, "end": 5})
         with self.assertRaises(ValueError):
-            self._delete(["a.py:1"], review=self.review)
+            self._delete(["a.py:1"], review=self.path, Q=QUESTIONS)
         self.assertEqual((self.root / "a.py").read_text(encoding="utf-8"), SOURCE_TEXT)
 
-    def test_review_without_manifest_is_refused(self):
+    def test_review_without_its_manifest_or_rubric_is_refused(self):
         with self.assertRaises(ValueError):
-            jv.delete_spans(self.units, ["a.py:1"], root=self.root, dry_run=False, review=self.review)
+            jv.delete_spans(self.units, ["a.py:1"], root=self.root, dry_run=False, review=self.path,
+                            Q=QUESTIONS)
+        with self.assertRaises(ValueError):
+            jv.delete_spans(self.units, ["a.py:1"], root=self.root, dry_run=False,
+                            manifest=self.manifest, review=self.path)
 
     def test_unit_altered_after_extraction_is_refused(self):
         self.units["a.py:1"]["end_line"] = 3
-        jv.adjudicate(self.review, "f1", "confirmed", evidence=[{"file": "a.py", "start": 1, "end": 2}])
-        jv.adjudicate(self.review, "f2", "confirmed", evidence=[{"file": "a.py", "start": 4, "end": 5}])
+        self._decide("f1", "confirmed", {"file": "a.py", "start": 1, "end": 2})
+        self._decide("f2", "confirmed", {"file": "a.py", "start": 4, "end": 5})
         with self.assertRaises(ValueError):
-            self._delete(["a.py:1"], review=self.review)
+            self._delete(["a.py:1"], review=self.path, Q=QUESTIONS)
         self.assertEqual((self.root / "a.py").read_text(encoding="utf-8"), SOURCE_TEXT)
 
     def test_fully_confirmed_review_deletes_the_reviewed_span(self):
-        jv.adjudicate(self.review, "f1", "confirmed", evidence=[{"file": "a.py", "start": 1, "end": 2}])
-        jv.adjudicate(self.review, "f2", "confirmed", evidence=[{"file": "a.py", "start": 4, "end": 5}])
-        self._delete(["a.py:1"], review=self.review)
+        self._decide("f1", "confirmed", {"file": "a.py", "start": 1, "end": 2})
+        self._decide("f2", "confirmed", {"file": "a.py", "start": 4, "end": 5})
+        self._delete(["a.py:1"], review=self.path, Q=QUESTIONS)
         remaining = (self.root / "a.py").read_text(encoding="utf-8")
         self.assertNotIn("def a():", remaining)
         self.assertIn("def b():", remaining)

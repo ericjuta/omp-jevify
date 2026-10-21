@@ -37,6 +37,15 @@ class _JvJournalError(RuntimeError):
     """A durable bundle write failed; the run stops rather than accept an item it could not record."""
 
 
+class _JvReviewRefused(ValueError):
+    """A review operation refused its input. `problems` lists every refusal; nothing was recorded."""
+
+    def __init__(self, problems):
+        self.problems = problems
+        super().__init__("; ".join(f"{problem['reason']} ({problem['item']}): {problem['detail']}"
+                                   for problem in problems))
+
+
 class _JvNoJournal:
     """Stock runs keep no durable record, so their call sites stay unconditional."""
 
@@ -81,18 +90,25 @@ class _JvBundle:
     def has_plan(self):
         return (self.path / self.PLAN).exists()
 
-    def acquire(self):
+    def acquire(self, *, wait=0.0):
+        """Take the exclusive lock, polling for up to `wait` seconds before refusing a live owner."""
         fcntl = self._flock()
         self.path.mkdir(parents=True, exist_ok=True)
         fd = _jv_os.open(self.path / self.LOCK, _jv_os.O_RDWR | _jv_os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as error:
-            _jv_os.close(fd)
-            if isinstance(error, BlockingIOError):
-                raise RuntimeError(f"bundle {self.path} is owned by a live run; wait for it to exit "
-                                   "or resume after it has exited") from None
-            raise
+        deadline = _jv_time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if not isinstance(error, BlockingIOError):
+                    _jv_os.close(fd)
+                    raise
+                if _jv_time.monotonic() >= deadline:
+                    _jv_os.close(fd)
+                    raise RuntimeError(f"bundle {self.path} is owned by a live run; wait for it to exit "
+                                       "or resume after it has exited") from None
+                _jv_time.sleep(0.02)
         record = _jv_json.dumps({**self.host(), "acquired": round(_jv_time.time(), 3)}, sort_keys=True)
         _jv_os.ftruncate(fd, 0)
         _jv_os.write(fd, record.encode("utf-8"))
@@ -186,12 +202,13 @@ class jv:
     CAP = 12_000
     MAX_JEV = 32_000  # Jev tokens; 32.6k-token states judged, 33.1k failed max_tokens_exceeded.
     SEED = 11
+    MAX_LABELS = 255  # Measured on the jev-1.13 route: 255 choice labels judged, more are refused.
     EDGES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.01)
     stats = {"states": {}, "runs": []}
     frozen = None
 
-    @staticmethod
-    def choice(instructions, criteria=None, **labels):
+    @classmethod
+    def choice(cls, instructions, criteria=None, **labels):
         options = dict(criteria or {})
         for label, description in labels.items():
             if label in options:
@@ -199,6 +216,9 @@ class jv:
             options[label] = description
         if len(options) < 2:
             raise ValueError("a choice requires at least two labels")
+        if len(options) > cls.MAX_LABELS:
+            raise ValueError(f"a choice allows at most {cls.MAX_LABELS} labels (measured jev-1.13 route "
+                             f"limit); got {len(options)}: split the question or pre-filter the labels")
         return {"type": "choice", "instructions": instructions, "criteria": options}
 
     @staticmethod
@@ -241,7 +261,15 @@ class jv:
 
     PLAN_SCHEMA = "jevify-plan/1"
     EXTRACTION_SCHEMA = "jevify-extraction/1"
-    REVIEW_SCHEMA = "jevify-review/1"
+    REVIEW_SCHEMA = "jevify-review/2"
+    REVIEW_LOCK_WAIT = 30.0
+    REVIEW_ITEM_FIELDS = frozenset({"unit", "claim", "question"})
+    REVIEW_DECISION_REQUIRED = frozenset({"item", "fingerprint", "view", "verdict"})
+    REVIEW_DECISION_FIELDS = REVIEW_DECISION_REQUIRED | {"evidence", "note"}
+    REVIEW_OPTIONS = (("confirmed", "The cited excerpt supports the claim."),
+                      ("overturned", "The cited excerpt contradicts the claim."),
+                      ("unresolved", "The cited excerpt cannot decide the claim."))
+    ReviewRefused = _JvReviewRefused
     VERDICTS = ("confirmed", "overturned", "unresolved")
     MAX_EVIDENCE_LINES = 400
     _RANK = {"ok": 0, "unmeasured": 1, "over": 2}
@@ -334,7 +362,14 @@ class jv:
         within single_budget. Both limits lose `headroom` (a fraction) and `framing` tokens.
         Sizing is local and never calls a judge: a byte count within a limit is ok without measuring;
         otherwise `sizer` (default jev_tokens; any callable returning an int or None) decides.
-        Requests that cannot be measured are reported as unmeasured rather than guessed."""
+        Requests that cannot be measured are reported as unmeasured rather than guessed.
+
+        The 32k single_budget default stays below the measured jev-1.13 input limit of about 32.7k
+        tokens (route-specific). `labels` counts the labels of every choice question; a choice over
+        MAX_LABELS (255, the measured route limit) is listed in `over_labels` and makes the plan
+        inadmissible. `pack_suggestion` is None, or a note offered when many tiny flat states leave
+        each request nearly empty; grouping is a separate instrument that needs its own pilot, and
+        plan never packs for you."""
         if not isinstance(Q, dict) or not Q:
             raise ValueError("plan requires a nonempty question mapping")
         limits = cls._limits(total_budget, single_budget, headroom, framing)
@@ -356,14 +391,32 @@ class jv:
             requests[identifier]["state_bytes"] = cls._utf8(state)
         over = [sid for sid, record in requests.items() if record["status"] == "over"]
         unmeasured = [sid for sid, record in requests.items() if record["status"] == "unmeasured"]
+        labels = {qid: len(question["criteria"]) for qid, question in Q.items()
+                  if isinstance(question, dict) and question.get("type") == "choice"
+                  and isinstance(question.get("criteria"), dict)}
+        over_labels = [qid for qid, count in labels.items() if count > cls.MAX_LABELS]
+        suggestion = None
+        if strategy == "flat" and len(requests) >= 20:
+            sizes = sorted(record["single"]["upper"] for record in requests.values())
+            middle = len(sizes) // 2
+            median = sizes[middle] if len(sizes) % 2 else (sizes[middle - 1] + sizes[middle]) / 2
+            if median < 0.10 * single_budget:
+                suggestion = (f"{len(requests)} flat states; the median request uses {median:.0f} of "
+                              f"{single_budget} single_budget tokens (<10%). Grouping several units per "
+                              "request may cut request count, but it is a separate instrument that needs "
+                              "its own pilot; plan() never packs for you.")
         result = {"schema": cls.PLAN_SCHEMA, "strategy": strategy, "qhash": cls.qhash(Q),
                   "questions": {"base": len(Q), "expanded": len(questions), "slots": width},
                   "budgets": {"total": total_budget, "single": single_budget, "headroom": headroom,
                               "framing": framing, "limits": limits,
                               "sizer": "jev_tokens" if sizer is None else "custom"},
                   "requests": requests, "over_budget": over, "unmeasured": unmeasured,
-                  "excluded": excluded, "admissible": not over and not unmeasured,
-                  "inference_calls": 0}
+                  "excluded": excluded, "admissible": not over and not unmeasured and not over_labels,
+                  "inference_calls": 0, "labels": labels, "over_labels": over_labels,
+                  "pack_suggestion": suggestion}
+        if over_labels:
+            print(f"plan: choice questions over {cls.MAX_LABELS} labels (measured route limit): "
+                  + ", ".join(f"{qid}={labels[qid]}" for qid in over_labels))
         print(f"plan: {len(requests)} requests · {len(over)} over budget · {len(unmeasured)} unmeasured "
               f"· admissible={result['admissible']}")
         return result
@@ -610,35 +663,440 @@ class jv:
                 "identity": {"digest": digest, "root": source["root"], "revision": source["revision"],
                              "files": {rel: record["sha256"] for rel, record in source["files"].items()}}}
 
-    @classmethod
-    def review_queue(cls, manifest, items, *, policy, root=None):
-        """Open a human adjudication queue bound to one extraction manifest and one frozen policy.
+    @staticmethod
+    def _review_show(value):
+        return "unknown" if value is None else _jv_json.dumps(value, ensure_ascii=False, sort_keys=True)
 
-        items: item_id -> {"unit": original ID, "claim": text}; every item starts pending. policy: a
-        nonempty escalation policy whose canonical digest is the review's policy identity."""
+    @staticmethod
+    def _review_reviewer(reviewer):
+        if not isinstance(reviewer, dict) or set(reviewer) != {"kind", "id"}:
+            raise ValueError("reviewer needs exactly kind and id")
+        if reviewer["kind"] not in ("human", "agent"):
+            raise ValueError("reviewer kind must be human or agent")
+        if not isinstance(reviewer["id"], str) or not reviewer["id"].strip():
+            raise ValueError("reviewer id must be a nonempty string")
+        return {"kind": reviewer["kind"], "id": reviewer["id"]}
+
+    @classmethod
+    def _open_review(cls, path, *, create=False):
+        """Lock one review directory. Reads hold the lock too: replay repairs a torn tail in place."""
+        if isinstance(path, dict):
+            raise ValueError("legacy in-memory review dicts are refused; pass the durable review path")
+        target = _jv_pathlib.Path(path)
+        if not create and not target.is_dir():
+            raise ValueError(f"no jevify review at {target}")
+        bundle = _JvBundle(target)
+        bundle.acquire(wait=cls.REVIEW_LOCK_WAIT)
+        if not create and not bundle.has_plan():
+            bundle.release()
+            raise ValueError(f"no jevify review at {target}")
+        return bundle
+
+    @classmethod
+    def _read_review_plan(cls, bundle):
+        try:
+            return cls._verify_review_plan(bundle.read_plan())
+        except ValueError as error:
+            raise ValueError(f"review at {bundle.path} is corrupt or not a jevify review: {error}") from error
+
+    @classmethod
+    def _verify_review_plan(cls, plan):
+        """The policy body is checked as drift, not as corruption; every other frozen field must match the digest."""
+        if not isinstance(plan, dict) or plan.get("schema") != cls.REVIEW_SCHEMA:
+            raise ValueError("not a jevify review plan")
+        identity = {key: value for key, value in plan.items() if key not in ("root", "digest", "policy")}
+        if plan.get("digest") != cls._digest(identity):
+            raise ValueError("review plan digest does not match its contents")
+        if (not isinstance(plan.get("files"), dict) or not isinstance(plan.get("items"), dict)
+                or not isinstance(plan.get("root"), str) or "policy" not in plan):
+            raise ValueError("review plan is missing a frozen section")
+        return plan
+
+    @classmethod
+    def _review_state(cls, plan, events):
+        """Fold the decision journal into per-item verdicts, history, and views. The journal is the only source."""
+        items = {item_id: {"verdict": "pending", "decisions": 0, "head": None, "history": []}
+                 for item_id in plan["items"]}
+        batches = 0
+        for event in events:
+            if event["event"] != "decisions":
+                raise ValueError(f"unknown review journal event {event['event']!r}")
+            batches += 1
+            decisions = event.get("decisions")
+            if event.get("batch") != batches or not isinstance(decisions, list) or not decisions:
+                raise ValueError(f"review journal batch {batches} is out of order or empty")
+            for record in decisions:
+                if (not isinstance(record, dict) or not isinstance(record.get("item"), str)
+                        or record["item"] not in items or record.get("verdict") not in cls.VERDICTS):
+                    raise ValueError(f"review journal batch {batches} holds an invalid decision")
+                entry = items[record["item"]]
+                entry["history"].append({"batch": batches, "at": event.get("at"),
+                                         "reviewer": event.get("reviewer"), "identity": event.get("identity"),
+                                         "verdict": record["verdict"], "evidence": record.get("evidence", []),
+                                         "note": record.get("note")})
+                entry["verdict"] = record["verdict"]
+                entry["decisions"] += 1
+                entry["head"] = cls._digest(record)
+        for item_id, entry in items.items():
+            entry["view"] = cls._digest({"fingerprint": plan["items"][item_id]["fingerprint"],
+                                         "decisions": entry["decisions"], "head": entry["head"]})
+        return {"items": items, "batches": batches}
+
+    @classmethod
+    def _review_drift(cls, plan, state, Q, root_path):
+        """Compare frozen identity with the current rubric, policy, and source bytes. Drift is reported, never repaired.
+
+        An item is stale_source when its excerpt's file changed, and stale_evidence when its latest decision cites
+        a changed file: that decision no longer counts, but the unchanged excerpt can be decided again."""
+        rubric = cls.qhash(Q) != plan["qhash"]
+        policy = not (isinstance(plan["policy"], dict) and cls._digest(plan["policy"]) == plan["policy_digest"]
+                      and plan["policy"].get("qhash") == plan["qhash"])
+        changed = []
+        for rel, sha in sorted(plan["files"].items()):
+            try:
+                current = cls._file_sha256(root_path, rel)
+            except ValueError:
+                current = None
+            if current != sha:
+                changed.append(rel)
+        items = {}
+        for item_id, entry in plan["items"].items():
+            history = state["items"][item_id]["history"]
+            if rubric:
+                items[item_id] = "stale_rubric"
+            elif policy:
+                items[item_id] = "stale_policy"
+            elif entry["excerpt"]["file"] in changed:
+                items[item_id] = "stale_source"
+            elif history and any(isinstance(record, dict) and record.get("file") in changed
+                                 for record in history[-1]["evidence"]):
+                items[item_id] = "stale_evidence"
+            else:
+                items[item_id] = None
+        return {"rubric": rubric, "policy": policy, "changed": changed, "items": items}
+
+    @classmethod
+    def _review_view(cls, bundle, Q, root):
+        """Verified plan, its root, folded state, and drift for one locked review."""
+        plan = cls._read_review_plan(bundle)
+        root_path = _jv_pathlib.Path(plan["root"] if root is None else root).resolve()
+        state = cls._review_state(plan, bundle.replay())
+        return plan, root_path, state, cls._review_drift(plan, state, Q, root_path)
+
+    @classmethod
+    def _review_summary(cls, plan, state, drift):
+        verdicts = {item_id: entry["verdict"] for item_id, entry in state["items"].items()}
+        stale = {item_id: reason for item_id, reason in drift["items"].items() if reason}
+        by_unit = _jv_collections.defaultdict(list)
+        for item_id, entry in plan["items"].items():
+            by_unit[entry["unit"]].append(item_id)
+
+        def listed(verdict):
+            return sorted(item_id for item_id, value in verdicts.items() if value == verdict)
+
+        pending, unresolved = listed("pending"), listed("unresolved")
+        drifted = drift["rubric"] or drift["policy"] or bool(drift["changed"])
+        return {"schema": cls.REVIEW_SCHEMA, "items": len(verdicts), "batches": state["batches"],
+                "pending": pending, "unresolved": unresolved, "confirmed": listed("confirmed"),
+                "overturned": listed("overturned"), "stale": stale,
+                "drift": {"rubric": drift["rubric"], "policy": drift["policy"], "source": drift["changed"]},
+                "complete": not pending and not unresolved,
+                "approved_units": sorted(unit for unit, ids in by_unit.items()
+                                         if all(verdicts[item_id] == "confirmed" and not stale.get(item_id)
+                                                for item_id in ids)),
+                "settled": not pending and not unresolved and not stale and not drifted,
+                "grants_authority": False,
+                "manifest_digest": plan["manifest_digest"], "policy_digest": plan["policy_digest"],
+                "qhash": plan["qhash"]}
+
+    @classmethod
+    def _review_rows(cls, rows, manifest, Q):
+        """Index one run's rows by unit ID, refusing any run not bound to this rubric and this extraction."""
+        if not isinstance(rows, _JvRows) or not isinstance(rows.receipt, dict):
+            raise ValueError("review rows must be a run's rows with their receipt")
+        if rows.receipt.get("qhash") != cls.qhash(Q):
+            raise ValueError("review rows were judged under a different question hash")
+        extraction = rows.receipt.get("extraction")
+        if not isinstance(extraction, dict) or extraction.get("digest") != manifest["digest"]:
+            raise ValueError("review rows were not judged from this extraction manifest")
+        indexed = {}
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or row["id"] in indexed:
+                raise ValueError("review rows need unique string IDs")
+            indexed[row["id"]] = row
+        return indexed
+
+    @classmethod
+    def _review_model(cls, indexed, unit, question, Q):
+        """Verdict, uncertainty, and provenance from one bound run row. No question means unknown."""
+        if question is None:
+            return None, None, None
+        if indexed is None:
+            raise ValueError(f"unit {unit!r} names question {question!r} but no run rows are bound")
+        if not isinstance(question, str) or question not in Q:
+            raise ValueError(f"unit {unit!r} names an unknown question: {question!r}")
+        row = indexed.get(unit)
+        if row is None:
+            raise ValueError(f"run rows have no row for unit {unit!r}")
+        if "error" in row:
+            raise ValueError(f"run row for unit {unit!r} is an error; it cannot supply a verdict")
+        if row.get("qhash") != cls.qhash(Q) or question not in row:
+            raise ValueError(f"run row for unit {unit!r} does not answer {question!r} under this question hash")
+        try:
+            uncertainty = cls.uncertainty(row, question, Q[question])
+        except KeyError as error:
+            raise ValueError(f"run row for unit {unit!r} lacks uncertainty field {error}") from None
+        provenance = {"source": "run_row", "model": row.get("model"), "row_qhash": row["qhash"],
+                      "batch_id": row.get("batch_id")}
+        return row[question], uncertainty, provenance
+
+    @classmethod
+    def review_queue(cls, path, manifest, items, *, Q, policy, root=None, rows=None):
+        """Create the durable review at `path`, or reopen it when its identity is unchanged.
+
+        items: item_id -> {"unit": original ID, "claim": text, optional "question": a key of Q}. An item with a
+        question takes its model verdict and uncertainty from that answer in `rows`, which must be the run that
+        judged this Q and this manifest. rows=None leaves every model field unknown. Caller-supplied model values
+        are refused. Each excerpt is its unit's exact manifest span, frozen with its quote and fingerprint.
+        policy must come from jv.policy(Q, bounds). Every item starts pending. A different review at `path` is refused."""
         if not isinstance(manifest, dict) or manifest.get("schema") != cls.EXTRACTION_SCHEMA:
             raise ValueError("review requires a jevify extraction manifest")
-        if not isinstance(policy, dict) or not policy:
-            raise ValueError("review requires a nonempty policy")
+        cls.policy_rule(policy, Q)
         if not isinstance(items, dict) or not items:
             raise ValueError("review requires items")
-        queue = {}
+        root_path = _jv_pathlib.Path(manifest["source"]["root"] if root is None else root).resolve()
+        check = cls.validate_extraction(manifest, root=root_path)
+        if not check["ok"]:
+            raise ValueError("review requires an extraction that matches current source: "
+                             + "; ".join(check["problems"]))
+        snapshot = {rel: record["sha256"] for rel, record in manifest["source"]["files"].items()}
+        indexed = None if rows is None else cls._review_rows(rows, manifest, Q)
+        run_digest = None if rows is None else cls._digest(rows.receipt)
+        frozen = {}
         for item_id, spec in items.items():
-            if not isinstance(item_id, str) or not isinstance(spec, dict) or set(spec) != {"unit", "claim"}:
-                raise ValueError(f"review item {item_id!r} needs string ID and exactly unit and claim")
-            unit, claim = spec["unit"], spec["claim"]
+            if not isinstance(item_id, str) or not item_id.strip():
+                raise ValueError("review item IDs must be nonempty strings")
+            if (not isinstance(spec, dict) or not {"unit", "claim"} <= set(spec)
+                    or set(spec) - cls.REVIEW_ITEM_FIELDS):
+                raise ValueError(f"review item {item_id!r} needs unit and claim and may add only question")
+            unit, claim, question = spec["unit"], spec["claim"], spec.get("question")
             if not isinstance(unit, str) or unit not in manifest["units"]:
                 raise ValueError(f"review item {item_id!r} names an unknown unit: {unit!r}")
             if not isinstance(claim, str) or not claim.strip():
                 raise ValueError(f"review item {item_id!r} needs a claim")
-            queue[item_id] = {"unit": unit, "claim": claim, "verdict": "pending",
-                              "evidence": [], "note": None, "history": []}
-        source = manifest["source"]
-        return {"schema": cls.REVIEW_SCHEMA, "manifest_digest": manifest["digest"],
-                "root": source["root"] if root is None else str(root),
-                "files": {rel: record["sha256"] for rel, record in source["files"].items()},
-                "policy": _jv_copy.deepcopy(policy), "policy_digest": cls._digest(policy),
-                "items": queue}
+            model_verdict, uncertainty, model = cls._review_model(indexed, unit, question, Q)
+            record = manifest["units"][unit]
+            start = record.get("line")
+            end = record.get("end_line") if record.get("end_line") is not None else start
+            if type(start) is not int or type(end) is not int:
+                raise ValueError(f"review item {item_id!r}: unit {unit!r} has no line span")
+            excerpt = cls._cite(root_path, snapshot, {"file": record["file"], "start": start, "end": end})
+            if len(excerpt["quote"]) > cls.CAP:
+                raise ValueError(f"review item {item_id!r}: excerpt exceeds {cls.CAP} characters")
+            entry = {"unit": unit, "claim": claim, "question": question, "model_verdict": model_verdict,
+                     "uncertainty": uncertainty, "model": model, "excerpt": excerpt}
+            entry["fingerprint"] = cls._digest({"item": item_id, **entry})
+            frozen[item_id] = entry
+        identity = {"schema": cls.REVIEW_SCHEMA, "manifest_digest": manifest["digest"], "files": snapshot,
+                    "qhash": cls.qhash(Q), "policy_digest": cls._digest(policy), "run_digest": run_digest,
+                    "items": frozen}
+        plan = {**identity, "policy": _jv_copy.deepcopy(policy), "root": str(root_path),
+                "digest": cls._digest(identity)}
+        bundle = cls._open_review(path, create=True)
+        try:
+            if bundle.has_plan():
+                if cls._read_review_plan(bundle)["digest"] != plan["digest"]:
+                    raise ValueError(f"{bundle.path} already holds a different review; reopen it with review_items")
+            else:
+                bundle.write_plan(plan)
+            current, _, state, drift = cls._review_view(bundle, Q, None)
+            return cls._review_summary(current, state, drift)
+        finally:
+            bundle.release()
+
+    @classmethod
+    def review_items(cls, path, *, Q, root=None):
+        """Every item with its frozen excerpt, model fields, fingerprint, current view, drift reason, and history."""
+        bundle = cls._open_review(path)
+        try:
+            plan, _, state, drift = cls._review_view(bundle, Q, root)
+            return [{"item": item_id, "unit": entry["unit"], "claim": entry["claim"],
+                     "excerpt": entry["excerpt"], "model_verdict": entry["model_verdict"],
+                     "uncertainty": entry["uncertainty"], "model": entry["model"],
+                     "fingerprint": entry["fingerprint"], "view": state["items"][item_id]["view"],
+                     "verdict": state["items"][item_id]["verdict"], "stale": drift["items"][item_id],
+                     "history": state["items"][item_id]["history"]}
+                    for item_id, entry in sorted(plan["items"].items())]
+        finally:
+            bundle.release()
+
+    @classmethod
+    def review_status(cls, path, *, Q, root=None):
+        bundle = cls._open_review(path)
+        try:
+            plan, _, state, drift = cls._review_view(bundle, Q, root)
+            return cls._review_summary(plan, state, drift)
+        finally:
+            bundle.release()
+
+    @classmethod
+    def _review_model_line(cls, entry):
+        model = entry["model"]
+        if model is None:
+            return "Model verdict: unknown (no run row bound to this item)"
+        return (f"Model verdict from run row (model {cls._review_show(model['model'])}, row qhash "
+                f"{cls._review_show(model['row_qhash'])}): {cls._review_show(entry['model_verdict'])}")
+
+    @classmethod
+    def _review_question(cls, item_id, entry, item_state, stale):
+        excerpt = entry["excerpt"]
+        quote = excerpt["quote"]
+        longest = max((len(run) for run in _jv_re.findall(r"`+", quote)), default=0)
+        fence = "`" * max(3, longest + 1)
+        return "\n".join([
+            f"Claim {item_id} ({entry['unit']}): {entry['claim']}",
+            f"Source {excerpt['file']}:{excerpt['start']}-{excerpt['end']} "
+            f"(file sha256 {excerpt['file_sha256']}):",
+            fence, quote, fence,
+            cls._review_model_line(entry),
+            f"Model uncertainty: {cls._review_show(entry['uncertainty'])}",
+            f"Earlier decisions on this item: {len(item_state['history'])}.",
+            *([f"Re-review: the latest decision ({item_state['verdict']}) cites source that changed since "
+               "extraction, so it no longer counts."] if stale == "stale_evidence" else []),
+            "Answer confirmed if the excerpt supports the claim, overturned if it contradicts the claim, "
+            "unresolved if it cannot decide the claim.",
+        ])
+
+    @classmethod
+    def review_questions(cls, path, *, Q, root=None, limit=5):
+        """Up to `limit` open items as ask-compatible questions, each with a binding to echo in its decision.
+
+        Open means pending, unresolved, or invalidated by drift. Questions are ordered: pending items, then decisions
+        whose cited evidence changed (stale_evidence), then unresolved items, each by ID, so a bulk loop always
+        reaches items not yet asked. Options keep one fixed order with no recommended option. Rubric or policy drift
+        refuses the whole batch. stale_source items are never asked; every stale item, whatever its verdict, is listed
+        under stale."""
+        if type(limit) is not int or limit < 1:
+            raise ValueError("review_questions limit must be a positive integer")
+        bundle = cls._open_review(path)
+        try:
+            plan, _, state, drift = cls._review_view(bundle, Q, root)
+            if drift["rubric"] or drift["policy"]:
+                reason = "stale_rubric" if drift["rubric"] else "stale_policy"
+                raise _JvReviewRefused([{"item": None, "reason": reason,
+                                         "detail": "review identity drifted; no item is presented"}])
+            def priority(item_id):
+                if state["items"][item_id]["verdict"] == "pending":
+                    return 0
+                return 1 if drift["items"][item_id] == "stale_evidence" else 2
+
+            open_items = sorted((item_id for item_id in plan["items"]
+                                 if state["items"][item_id]["verdict"] in ("pending", "unresolved")
+                                 or drift["items"][item_id]),
+                                key=lambda item_id: (priority(item_id), item_id))
+            questions, bindings = [], {}
+            for item_id in [item_id for item_id in open_items
+                            if drift["items"][item_id] in (None, "stale_evidence")][:limit]:
+                entry = plan["items"][item_id]
+                excerpt = entry["excerpt"]
+                questions.append({
+                    "id": item_id, "multi": False,
+                    "question": cls._review_question(item_id, entry, state["items"][item_id],
+                                                     drift["items"][item_id]),
+                    "options": [{"label": label, "description": text} for label, text in cls.REVIEW_OPTIONS]})
+                bindings[item_id] = {
+                    "fingerprint": entry["fingerprint"], "view": state["items"][item_id]["view"],
+                    "citation": {"file": excerpt["file"], "start": excerpt["start"], "end": excerpt["end"]}}
+            return {"questions": questions, "bindings": bindings, "open": len(open_items),
+                    "stale": {item_id: reason for item_id, reason in sorted(drift["items"].items()) if reason}}
+        finally:
+            bundle.release()
+
+    @classmethod
+    def adjudicate(cls, path, decisions, *, Q, reviewer, root=None):
+        """Atomically append one reviewer batch. Every decision is checked against the current view first; any
+        refusal raises ReviewRefused listing all problems and records nothing.
+
+        decision: {"item", "fingerprint", "view", "verdict"} plus optional "evidence" and "note". confirmed and
+        overturned cite [{"file", "start", "end"}] inside the frozen snapshot; unresolved may cite none.
+        reviewer: {"kind": "human" | "agent", "id"}, recorded as self-declared, not authenticated."""
+        reviewer = cls._review_reviewer(reviewer)
+        if not isinstance(decisions, (list, tuple)) or not decisions:
+            raise ValueError("adjudicate requires a nonempty list of decisions")
+        bundle = cls._open_review(path)
+        try:
+            plan, root_path, state, drift = cls._review_view(bundle, Q, root)
+            problems, accepted, seen = [], [], set()
+
+            def refuse(item, reason, detail):
+                problems.append({"item": item, "reason": reason, "detail": detail})
+
+            for entry in decisions:
+                item = entry.get("item") if isinstance(entry, dict) else None
+                if (not isinstance(entry, dict) or not isinstance(item, str)
+                        or not cls.REVIEW_DECISION_REQUIRED <= set(entry)
+                        or set(entry) - cls.REVIEW_DECISION_FIELDS):
+                    refuse(item, "invalid_decision", "a decision needs item, fingerprint, view, and verdict; "
+                           "it may add evidence and note only")
+                    continue
+                if item in seen:
+                    refuse(item, "duplicate_item", "a batch decides each item at most once")
+                    continue
+                seen.add(item)
+                if item not in plan["items"]:
+                    refuse(item, "unknown_item", "the item is not in this review")
+                    continue
+                if drift["items"][item] not in (None, "stale_evidence"):
+                    refuse(item, drift["items"][item], "the frozen source, rubric, or policy changed")
+                    continue
+                current = state["items"][item]
+                last = current["history"][-1]["reviewer"] if current["history"] else None
+                if reviewer["kind"] == "agent" and isinstance(last, dict) and last.get("kind") == "human":
+                    refuse(item, "protected_decision", "an agent cannot replace a human's latest decision")
+                    continue
+                if entry["fingerprint"] != plan["items"][item]["fingerprint"]:
+                    refuse(item, "fingerprint_mismatch", "the decision does not name this item's frozen content")
+                    continue
+                if entry["view"] != current["view"]:
+                    refuse(item, "superseded", "the item changed after this view was issued; re-read its question")
+                    continue
+                verdict, note, evidence = entry["verdict"], entry.get("note"), entry.get("evidence", [])
+                if verdict not in cls.VERDICTS:
+                    refuse(item, "invalid_decision", f"verdict must be one of: {', '.join(cls.VERDICTS)}")
+                    continue
+                if note is not None and not isinstance(note, str):
+                    refuse(item, "invalid_decision", "note must be a string")
+                    continue
+                if not isinstance(evidence, list):
+                    refuse(item, "invalid_evidence", "evidence must be a list")
+                    continue
+                if verdict != "unresolved" and not evidence:
+                    refuse(item, "invalid_evidence", f"{verdict} requires cited source evidence")
+                    continue
+                changed = [citation.get("file") for citation in evidence
+                           if isinstance(citation, dict) and citation.get("file") in drift["changed"]]
+                if changed:
+                    refuse(item, "stale_source", "cited file changed: " + ", ".join(map(str, changed)))
+                    continue
+                try:
+                    records = [cls._cite(root_path, plan["files"], citation) for citation in evidence]
+                except ValueError as error:
+                    refuse(item, "invalid_evidence", str(error))
+                    continue
+                accepted.append({"item": item, "fingerprint": entry["fingerprint"], "verdict": verdict,
+                                 "evidence": records, "note": note})
+            if problems:
+                raise _JvReviewRefused(problems)
+            batch = state["batches"] + 1
+            bundle.append({"event": "decisions", "batch": batch, "reviewer": reviewer,
+                           "identity": "self_declared", "decisions": accepted})
+            current, _, state, drift = cls._review_view(bundle, Q, root)
+            return {"batch": batch,
+                    "applied": [{"item": record["item"], "verdict": record["verdict"],
+                                 "view": state["items"][record["item"]]["view"]} for record in accepted],
+                    "review": cls._review_summary(current, state, drift)}
+        finally:
+            bundle.release()
 
     @classmethod
     def _cite(cls, root_path, snapshot, citation):
@@ -662,49 +1120,7 @@ class jv:
                 "quote": quote}
 
     @classmethod
-    def adjudicate(cls, review, item_id, verdict, *, evidence=(), note=None):
-        """Record a reviewer decision. Validation completes before the review changes.
-
-        confirmed and overturned require cited evidence; unresolved may cite none. Evidence is
-        [{"file", "start", "end"}] (1-based, inclusive) inside a snapshot file, read back from current
-        source whose hash must still match the snapshot. Earlier decisions move into history."""
-        if not isinstance(review, dict) or review.get("schema") != cls.REVIEW_SCHEMA:
-            raise ValueError("not a jevify review")
-        if cls._digest(review["policy"]) != review["policy_digest"]:
-            raise ValueError("review policy identity does not match its policy")
-        if item_id not in review["items"]:
-            raise ValueError(f"unknown review item: {item_id!r}")
-        if verdict not in cls.VERDICTS:
-            raise ValueError(f"verdict must be one of: {', '.join(cls.VERDICTS)}")
-        if note is not None and not isinstance(note, str):
-            raise ValueError("note must be a string")
-        citations = list(evidence)
-        if verdict != "unresolved" and not citations:
-            raise ValueError(f"{verdict} requires cited source evidence")
-        root_path = _jv_pathlib.Path(review["root"]).resolve()
-        records = [cls._cite(root_path, review["files"], citation) for citation in citations]
-        entry = review["items"][item_id]
-        entry["history"].append({"verdict": entry["verdict"], "evidence": entry["evidence"],
-                                 "note": entry["note"]})
-        entry.update(verdict=verdict, evidence=records, note=note)
-        return review
-
-    @classmethod
-    def review_status(cls, review):
-        if not isinstance(review, dict) or review.get("schema") != cls.REVIEW_SCHEMA:
-            raise ValueError("not a jevify review")
-        verdicts = _jv_collections.Counter(entry["verdict"] for entry in review["items"].values())
-        pending = sorted(item_id for item_id, entry in review["items"].items()
-                         if entry["verdict"] == "pending")
-        return {"items": len(review["items"]), "confirmed": verdicts["confirmed"],
-                "overturned": verdicts["overturned"], "unresolved": verdicts["unresolved"],
-                "pending": pending, "complete": not pending,
-                "manifest_digest": review["manifest_digest"],
-                "policy_digest": review["policy_digest"],
-                "policy_intact": cls._digest(review["policy"]) == review["policy_digest"]}
-
-    @classmethod
-    def _guard_deletion(cls, units, targets, manifest, review, root):
+    def _guard_deletion(cls, units, targets, manifest, bundle, Q, root):
         check = cls.validate_extraction(manifest, root=root)
         if not check["ok"]:
             raise ValueError("refusing delete_spans: source no longer matches the extraction snapshot: "
@@ -715,19 +1131,21 @@ class jv:
                 raise ValueError(f"refusing delete_spans: {uid} is not in the extraction manifest")
             if record["content_sha256"] != cls._digest(units[uid]):
                 raise ValueError(f"refusing delete_spans: {uid} differs from its extraction record")
-        if review is None:
+        if bundle is None:
             return
-        status = cls.review_status(review)
-        if review["manifest_digest"] != manifest["digest"]:
+        plan, _, state, drift = cls._review_view(bundle, Q, root)
+        if plan["manifest_digest"] != manifest["digest"]:
             raise ValueError("refusing delete_spans: review belongs to a different extraction manifest")
-        if not status["policy_intact"]:
-            raise ValueError("refusing delete_spans: review policy identity does not match its policy")
-        if status["pending"]:
-            raise ValueError("refusing delete_spans: review is incomplete; pending: "
-                             + ", ".join(status["pending"][:10]))
+        if drift["rubric"] or drift["policy"] or drift["changed"]:
+            raise ValueError("refusing delete_spans: review no longer matches its frozen rubric, policy, or source")
+        open_items = sorted(item_id for item_id, entry in state["items"].items()
+                            if entry["verdict"] in ("pending", "unresolved"))
+        if open_items:
+            raise ValueError("refusing delete_spans: review is incomplete; pending or unresolved: "
+                             + ", ".join(open_items[:10]))
+        approved = set(cls._review_summary(plan, state, drift)["approved_units"])
         for uid in targets:
-            verdicts = [entry["verdict"] for entry in review["items"].values() if entry["unit"] == uid]
-            if not verdicts or any(verdict != "confirmed" for verdict in verdicts):
+            if uid not in approved:
                 raise ValueError(f"refusing delete_spans: {uid} lacks a confirmed review decision")
 
     @staticmethod
@@ -798,6 +1216,196 @@ class jv:
         old, new = cls._git_path(old), cls._git_path(new)
         return (old[2:] if old.startswith("a/") else old,
                 new[2:] if new.startswith("b/") else new)
+
+    # Explicit OMP read elision/truncation markers seen on this host. A text containing any of them is
+    # not the whole source, so unit builders refuse it instead of judging a silently shortened input.
+    # "[end of ... bytes]" is a normal end-of-file footer and is deliberately NOT listed.
+    ELISION_MARKERS = (
+        ("[… N ln elided", _jv_re.compile(r"\[(?:…|\.\.\.)\s*\d+\s*ln elided")),
+        ("re-read needed ranges", _jv_re.compile(r"re-read needed ranges")),
+        ("… N more", _jv_re.compile(r"(?:…|\.\.\.)\s*\d+ more\b")),
+        ("[Some lines truncated to", _jv_re.compile(r"\[Some lines truncated to")),
+        ("Use artifact://", _jv_re.compile(r"Use artifact://")),
+    )
+
+    @classmethod
+    def refuse_elided(cls, text, *, source="input"):
+        """Raise ValueError naming the first OMP read elision/truncation marker found in `text`
+        (see ELISION_MARKERS); return `text` unchanged otherwise. An elided read yields fewer units
+        than the source holds, and the shortfall is otherwise invisible (an elided `agent://` read
+        once produced zero units)."""
+        if not isinstance(text, str):
+            raise ValueError(f"{source} must be text, got {type(text).__name__}")
+        for name, pattern in cls.ELISION_MARKERS:
+            found = pattern.search(text)
+            if found:
+                line = text.count("\n", 0, found.start()) + 1
+                raise ValueError(f"{source} is elided: marker {name!r} at line {line} "
+                                 f"({found.group(0)!r}); re-read the full source before building units")
+        return text
+
+    @staticmethod
+    def _table_cells(line):
+        """Split one Markdown table row on unescaped `|` only; `\\|` becomes a literal `|`."""
+        text = line.strip()
+        cells, buffer, index, after_separator = [], [], 0, False
+        while index < len(text):
+            char = text[index]
+            if char == "\\" and text[index + 1:index + 2] == "|":
+                buffer.append("|")
+                index += 2
+                after_separator = False
+                continue
+            if char == "|":
+                cells.append("".join(buffer).strip())
+                buffer, after_separator = [], True
+            else:
+                buffer.append(char)
+                after_separator = False
+            index += 1
+        cells.append("".join(buffer).strip())
+        if text.startswith("|"):
+            cells.pop(0)
+        if after_separator and cells:
+            cells.pop()
+        return cells
+
+    @classmethod
+    def units_from_table(cls, text, *, key=None):
+        """Parse the first GitHub Markdown table in `text` into {id: {column: value}}.
+
+        Elided input is refused first. Cells split on unescaped `|` only (`\\|` stays one cell, unescaped
+        to `|`) and are stripped. A row whose cell count differs from the header is refused, never
+        truncated or padded. IDs come from the `key` column (empty or duplicate values are refused) or
+        are 1-based row numbers as strings. A second table after the first is refused."""
+        cls.refuse_elided(text, source="table")
+        lines = [line for line in text.splitlines() if line.strip()]
+        start = next((i for i, line in enumerate(lines) if line.strip().startswith("|")), None)
+        empty = "no table rows; was the read elided?"
+        if start is None or start + 1 >= len(lines):
+            raise ValueError(empty)
+        header = cls._table_cells(lines[start])
+        divider = cls._table_cells(lines[start + 1])
+        if not divider or not all(_jv_re.fullmatch(r":?-+:?", cell) for cell in divider):
+            raise ValueError(empty)
+        if not all(header) or len(set(header)) != len(header):
+            raise ValueError(f"table header needs unique nonempty column names: {header!r}")
+        if len(divider) != len(header):
+            raise ValueError(f"table divider has {len(divider)} cells; header has {len(header)}")
+        if key is not None and key not in header:
+            raise ValueError(f"key column {key!r} is not in the table header {header!r}")
+        rows, ragged, tail = [], [], start + 2
+        while tail < len(lines) and lines[tail].strip().startswith("|"):
+            cells = cls._table_cells(lines[tail])
+            if len(cells) != len(header):
+                ragged.append(len(rows) + 1)
+            rows.append(cells)
+            tail += 1
+        if any(line.strip().startswith("|") for line in lines[tail:]):
+            raise ValueError("more than one table in the text; pass one table")
+        if not rows:
+            raise ValueError(empty)
+        if ragged:
+            raise ValueError(f"table rows {ragged} have a cell count different from the header's "
+                             f"{len(header)}; an unescaped `|` or a cut line? refusing to truncate")
+        units, empty_keys = {}, []
+        for number, cells in enumerate(rows, 1):
+            record = dict(zip(header, cells))
+            identifier = str(number) if key is None else record[key]
+            if not identifier:
+                empty_keys.append(number)
+                continue
+            if identifier in units:
+                raise ValueError(f"duplicate table key {identifier!r} (row {number})")
+            units[identifier] = record
+        if empty_keys:
+            raise ValueError(f"empty {key!r} value in table rows {empty_keys}")
+        return units
+
+    @classmethod
+    def facts(cls, units, checks, *, settle=None, requires=None):
+        """Attach deterministic facts to units and settle what a rule already decides, before any judging.
+
+        units: {id: unit}. checks: {name: fn(unit) -> JSON value}. Each unit becomes
+        {"unit": unit, "facts": {name: value}}; a dict unit instead gains a "facts" key (an existing
+        "facts" key is refused, never overwritten). A check that raises, or returns a non-JSON value, is
+        recorded in report["check_errors"][id][name]; the unit stays in the states without that fact and
+        is never settled by rule.
+        settle: fn(facts) -> None (undecided: judge it) or {column: decided_value}. Return a mapping only
+        when the rule decides every question for that unit. The unit leaves the states and becomes a row
+        {"id", "settled_by": "rule", column..., "qhash": None}; columns are the question ids exactly as
+        judged rows name them (dotted columns such as `qid.conf` are never fabricated). A rule that
+        raises is recorded in report["settle_errors"] and the unit stays to be judged.
+        requires: {qid: [fact or field names]}. A judged unit lacking one (absent, None or "" in its facts
+        or, for dict units, its fields) is listed in report["missing"][qid][id] and a warning is printed:
+        the question asks about something the unit does not contain. Settled units are not asked.
+        Returns (states, settled_rows, report); nothing here calls a judge."""
+        if not isinstance(units, dict):
+            raise ValueError("units must be a mapping of id to unit")
+        if not isinstance(checks, dict) or not all(isinstance(name, str) and name and callable(fn)
+                                                   for name, fn in checks.items()):
+            raise ValueError("checks must map nonempty fact names to callables")
+        if settle is not None and not callable(settle):
+            raise ValueError("settle must be callable")
+        requires = {} if requires is None else requires
+        if not isinstance(requires, dict) or not all(
+                isinstance(qid, str) and isinstance(names, (list, tuple)) and names
+                and all(isinstance(name, str) for name in names) for qid, names in requires.items()):
+            raise ValueError("requires must map question ids to nonempty lists of names")
+        clobbered = [identifier for identifier, unit in units.items()
+                     if isinstance(unit, dict) and "facts" in unit]
+        if clobbered:
+            raise ValueError(f"units already have a 'facts' key and would be clobbered: {clobbered[:10]}")
+        states, settled, check_errors, settle_errors = {}, [], {}, {}
+        missing = {qid: {} for qid in requires}
+        reserved = {"id", "settled_by", "qhash"}
+        for identifier, unit in units.items():
+            values, errors = {}, {}
+            for name, fn in checks.items():
+                try:
+                    value = fn(unit)
+                    _jv_json.dumps(value, ensure_ascii=False)
+                except Exception as error:
+                    errors[name] = f"{type(error).__name__}: {error}"
+                    continue
+                values[name] = value
+            if errors:
+                check_errors[identifier] = errors
+            if settle is not None and not errors:
+                try:
+                    decided = settle(values)
+                    if decided is not None and (not isinstance(decided, dict) or not decided
+                                                or not all(isinstance(column, str) and column
+                                                           and column not in reserved
+                                                           for column in decided)):
+                        raise ValueError("settle must return None or a nonempty mapping of "
+                                         f"question columns (not {sorted(reserved)}) to values")
+                except Exception as error:
+                    settle_errors[identifier] = f"{type(error).__name__}: {error}"
+                    decided = None
+                if decided is not None:
+                    settled.append({"id": identifier, "settled_by": "rule", **decided, "qhash": None})
+                    continue
+            wrapped = {**unit, "facts": values} if isinstance(unit, dict) else {"unit": unit, "facts": values}
+            states[identifier] = wrapped
+            for qid, names in requires.items():
+                absent = [name for name in names
+                          if values.get(name) in (None, "")
+                          and (not isinstance(unit, dict) or unit.get(name) in (None, ""))]
+                if absent:
+                    missing[qid][identifier] = absent
+        missing = {qid: found for qid, found in missing.items() if found}
+        report = {"check_errors": check_errors, "settle_errors": settle_errors, "missing": missing,
+                  "counts": {"units": len(units), "judged": len(states), "settled": len(settled),
+                             "check_errors": len(check_errors), "settle_errors": len(settle_errors),
+                             "missing": {qid: len(found) for qid, found in missing.items()}}}
+        print(f"facts: {len(units)} units · {len(settled)} settled by rule · {len(states)} to judge · "
+              f"{len(check_errors)} check errors · {len(settle_errors)} settle errors")
+        for qid, found in missing.items():
+            print(f"warning: {len(found)} units lack names question {qid!r} depends on "
+                  f"({', '.join(sorted({n for names in found.values() for n in names}))}); the judge "
+                  "would answer about something the unit does not contain: " + ", ".join(map(str, list(found)[:10])))
+        return states, settled, report
 
     @classmethod
     def git_units(cls, rev, *, by="file", cwd=".", paths=None, context=3):
@@ -1289,6 +1897,7 @@ class jv:
         the host batch ID as soon as the host returned it, the cost estimate, and coverage errors."""
         journal = _JvNoJournal() if journal is None else journal
         found, coverage, problem, cost, cost_known = {}, [], "no result delivered", 0.0, False
+        host_done = host_total = None  # the host's own count, observed only from a batch this owner submitted
         batch, batch_id = None, attach_id
         try:
             if attach_id is None:
@@ -1330,6 +1939,11 @@ class jv:
                 if len(found) >= len(payload) or done or not snapshot.get("running", False):
                     break
             final = batch.status()
+            if attach_id is None:
+                # An attached batch's counts include items an earlier owner drained, so they are not ours.
+                done_count, total_count = final.get("done"), final.get("total")
+                if type(done_count) is int and type(total_count) is int:
+                    host_done, host_total = done_count, total_count
             raw_cost = final.get("cost", 0)
             if isinstance(raw_cost, (int, float)):
                 cost, cost_known = float(raw_cost), True
@@ -1363,7 +1977,8 @@ class jv:
         else:
             status = "partial"
         outcome = {"batch_id": batch_id, "status": status, "problem": problem, "cost": cost,
-                   "cost_known": cost_known, "coverage_errors": coverage}
+                   "cost_known": cost_known, "coverage_errors": coverage,
+                   "host_done": host_done, "host_total": host_total}
         # A failed attachment stays open, so a later resume on the same host session can try again.
         if status != "attach_failed":
             journal.append({"event": "end", "attempt": attempt, "status": status, "problem": problem,
@@ -1447,6 +2062,7 @@ class jv:
                 "failure": outcome["problem"] or "no result delivered",
                 "coverage_errors": list(outcome["coverage_errors"]),
                 "cost_estimate": outcome["cost"], "cost_known": outcome["cost_known"],
+                "host_done": outcome.get("host_done"), "host_total": outcome.get("host_total"),
                 "resumed": resumed,
                 "items": [{"id": key, "batch_id": outcome["batch_id"],
                            **{field: getattr(found[key], field, None) for field in cls._RECEIPT_ITEM_FIELDS}}
@@ -1564,9 +2180,11 @@ class jv:
 
     @classmethod
     def _flat_row(cls, identifier, Q, item, digest, *, slot=None, group=None, failure=None,
-                  batch_id=None):
+                  batch_id=None, state=None, judged_at=None):
         row = {"id": identifier, "model": getattr(item, "model", None), "qhash": digest,
-               "batch_id": batch_id}
+               "batch_id": batch_id,
+               "state_sha256": None if state is None else cls.state_digest(state),
+               "judged_at": judged_at, "assembly": "single"}
         for field in ("selected_model", "primary_model", "fallback", "response_model", "cache",
                       "questions", "cached_questions"):
             row[field] = getattr(item, field, None)
@@ -1600,7 +2218,7 @@ class jv:
             "id", "model", "qhash", "batch_id", "selected_model", "primary_model",
             "fallback", "response_model", "cache", "questions", "cached_questions",
             "provenance_unknown", "group", "slot", "error", "why",
-            "coverage_complete", "coverage_errors")}
+            "coverage_complete", "coverage_errors", "state_sha256", "judged_at", "assembly")}
         for qid, question in Q.items():
             for name in jv._answer_columns(qid, question):
                 if name in columns:
@@ -1784,9 +2402,11 @@ class jv:
         report = cls.plan(ctx["states"], ctx["Q"], grouping=ctx["grouping"])
         if not report["admissible"]:
             refused = report["over_budget"] + report["unmeasured"]
+            over_labels = report.get("over_labels") or []
             raise ValueError(f"preflight refuses to submit: {len(report['over_budget'])} over budget, "
-                             f"{len(report['unmeasured'])} unmeasured ({', '.join(refused)[:400]}); "
-                             "split or shrink these units")
+                             f"{len(report['unmeasured'])} unmeasured ({', '.join(refused)[:400]}), "
+                             f"{len(over_labels)} question(s) over {cls.MAX_LABELS} labels "
+                             f"({', '.join(map(str, over_labels))}); split or shrink these units or labels")
         return {key: value for key, value in report.items() if key != "requests"}
 
     @classmethod
@@ -1935,6 +2555,8 @@ class jv:
         cache_counts = {"hit": 0, "partial": 0, "miss": 0, "unknown": 0}
         question_count, cached_count, counts_unknown = 0, 0, 0
         unresolved = []
+        # The host reports no per-item completion time, so judged_at is when this collection concluded.
+        judged_at = round(_jv_time.time(), 3)
         for key in ctx["states"]:
             item, evidence, issue = outcomes[key]
             cache = getattr(item, "cache", None)
@@ -1954,20 +2576,28 @@ class jv:
             if item is None:
                 unresolved.extend(cls._units(ctx, [key]))
             if slots is None:
-                rows.append(cls._flat_row(key, Q, item, digest, failure=failure, batch_id=batch_id))
+                rows.append(cls._flat_row(key, Q, item, digest, failure=failure, batch_id=batch_id,
+                                          state=ctx["states"][key], judged_at=judged_at))
             else:
                 for index, identifier in enumerate(slots[key]):
                     rows.append(cls._flat_row(identifier, Q, item, digest, slot=index, group=key,
-                                              failure=failure, batch_id=batch_id))
+                                              failure=failure, batch_id=batch_id,
+                                              state=ctx["states"][key], judged_at=judged_at))
         models = _jv_collections.Counter(str(row["model"]) for row in rows if row["model"] is not None)
         errors = sum("error" in row for row in rows)
         elapsed = _jv_time.monotonic() - start
         cost = sum(evidence["cost_estimate"] for evidence in evidences if evidence["cost_known"])
         coverage_errors = [error for evidence in evidences for error in evidence["coverage_errors"]]
         uncertainty = cls._uncertainty(evidences)
+        served, served_unknown = cls._served(rows)
+        host_counts = cls._host_counts(evidences)
         summary = {"schema": 2, "strategy": "jev-grouped" if slots is not None else "jev-flat",
                    "intent": intent, "units": len(rows), "ok": len(rows) - errors, "errors": errors,
                    "models": dict(models), "cost": cost, "cost_kind": "batch_estimate",
+                   "billing": "estimate_unverified", "assembly": "single",
+                   "served_models": served, "served_unknown": served_unknown,
+                   "comparable": len(served) == 1 and not served_unknown,
+                   "host_counts": host_counts,
                    "cost_known": all(evidence["cost_known"] for evidence in evidences),
                    "cost_uncertain": bool(uncertainty), "cost_uncertainty": uncertainty,
                    "elapsed": elapsed, "qhash": digest, "question_hash": digest,
@@ -2000,7 +2630,8 @@ class jv:
             row["coverage_errors"] = list(coverage_errors)
         cls.stats["runs"].append(summary)
         print(f"jevify: {len(rows)} units · {len(rows) - errors} ok · {errors} errors · "
-              f"models={dict(models)} · batch cost estimate={cost:.6g} · "
+              f"served={served}{' (+%d unknown)' % served_unknown if served_unknown else ''} · "
+              f"batch cost estimate (unverified, priced by host)={cost:.6g} · "
               f"elapsed={elapsed:.1f}s · qhash={digest}")
         print(_jv_json.dumps({"jevify_receipt": summary}, ensure_ascii=False))
         if receipt_path is not None:
@@ -2011,6 +2642,33 @@ class jv:
             bundle.append({"event": "finish", "complete": summary["complete"],
                            "unresolved": len(unresolved)})
         return rows
+
+    @staticmethod
+    def _served(rows):
+        """({model: answered rows}, answered rows whose served model is unknown)."""
+        counts, unknown = _jv_collections.Counter(), 0
+        for row in rows:
+            if "error" in row:
+                continue
+            if row.get("model") is None:
+                unknown += 1
+            else:
+                counts[str(row["model"])] += 1
+        return dict(counts), unknown
+
+    @staticmethod
+    def _host_counts(evidences):
+        """Answered units against the host's own done/total for the batches this run submitted. Counts the
+        host did not report, or that an attachment shares with an earlier owner, stay None and never reconcile."""
+        answered = sum(len(evidence["answered_ids"]) for evidence in evidences)
+        planned = sum(len(evidence["planned_ids"]) for evidence in evidences)
+        done = [evidence.get("host_done") for evidence in evidences]
+        total = [evidence.get("host_total") for evidence in evidences]
+        observed = bool(evidences) and all(type(value) is int for value in done + total)
+        host_done = sum(done) if observed else None
+        host_total = sum(total) if observed else None
+        return {"answered": answered, "planned": planned, "host_done": host_done, "host_total": host_total,
+                "reconciled": observed and host_done == answered and host_total == planned}
 
     @staticmethod
     def _write_json(path, value):
@@ -2089,6 +2747,248 @@ class jv:
         if not all(isinstance(text, str) for text in texts):
             raise ValueError(f"{qid} legend entries must be strings")
         return legend
+
+    @classmethod
+    def _adopt_items(cls, source):
+        """(items {key: item}, host status or None, source kind). A host batch is read from its results(),
+        failed() and status() snapshots and is never drained, so adoption stays synchronous. Its results()
+        carry answers only: the served model of those items is unknown, never taken from the batch status."""
+        def blank(**fields):
+            return _jv_types.SimpleNamespace(**{**dict.fromkeys(cls._ITEM_FIELDS), **fields})
+
+        if all(callable(getattr(source, name, None)) for name in ("results", "failed", "status")):
+            answers, failures = dict(source.results()), dict(source.failed())
+            try:
+                status = source.status()
+                status = dict(status) if isinstance(status, dict) else {"error": "host status was not a mapping"}
+            except Exception as error:
+                status = {"error": f"host status unavailable: {error}"}
+            items = {key: blank(ok=True, answers=value, error=None) for key, value in answers.items()}
+            for key, error in failures.items():
+                if key in items:
+                    items[key] = blank(ok=False, answers=None,
+                                       error="host reported both an answer and a failure for this key")
+                else:
+                    items[key] = blank(ok=False, answers=None, error=str(error))
+            return items, status, "batch"
+        if isinstance(source, dict):
+            pairs = list(source.items())
+        elif isinstance(source, (list, tuple)):
+            pairs = []
+            for entry in source:
+                if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                    raise ValueError("adopt list sources must be (key, item) pairs, as drain() returns them")
+                pairs.append(tuple(entry))
+        else:
+            raise ValueError("adopt source must be a host judge batch, a {key: item or answers} mapping, "
+                             "or drain()'s [(key, item)] pairs")
+        items = {}
+        for key, value in pairs:
+            if key in items:
+                raise ValueError(f"adopt source delivers key {key!r} more than once")
+            if isinstance(value, dict):
+                items[key] = blank(ok=True, answers=value, error=None)
+            elif hasattr(value, "answers") and hasattr(value, "ok"):
+                own = getattr(value, "key", key)
+                if own != key:
+                    raise ValueError(f"host item keyed {own!r} was delivered under key {key!r}")
+                items[key] = value
+            else:
+                raise ValueError(f"result {key!r} is neither a host judge item nor an answers mapping")
+        return items, None, "items"
+
+    @classmethod
+    def adopt(cls, source, states, Q, *, intent=None, grouping=None, batch=None):
+        """Bind built-in judge_batch() output to its submitted states as receipt-bound rows, so flag(), policy
+        rules, review and reports apply to work the host notice ran directly.
+
+        source: a host JudgmentBatch (read from results()/failed()/status(), never drained), a mapping
+        {key: host item or answers mapping}, or drain()'s [(key, item)] pairs. Every state needs a result:
+        a missing one becomes an error row; a result for a key outside `states` is refused because it cannot be
+        bound to a submitted state. grouping is the manifest from group()/pack() for slot-expanded questions.
+        Answers-only results (batch results(), answers mappings) have an unknown served model.
+
+        batch: with drained items, the host batch (or its status() dict) they came from, so the receipt keeps the
+        batch ID, cost estimate and host done/total. Drained items keep their served model; batch snapshots do not."""
+        ctx = cls._context(states, Q, grouping)
+        items, status, kind = cls._adopt_items(source)
+        if batch is not None:
+            if kind == "batch":
+                raise ValueError("adopt takes batch= only with drained items; the batch source already has a status")
+            try:
+                snapshot = batch.status() if callable(getattr(batch, "status", None)) else batch
+                status = dict(snapshot) if isinstance(snapshot, dict) else {"error": "host status was not a mapping"}
+            except Exception as error:
+                status = {"error": f"host status unavailable: {error}"}
+            kind = "items+status"
+        unknown = [key for key in items if key not in ctx["states"]]
+        if unknown:
+            raise ValueError("results for keys outside the submitted states cannot be bound: "
+                             + ", ".join(map(repr, unknown[:10]))
+                             + (f" (+{len(unknown) - 10} more)" if len(unknown) > 10 else ""))
+        if cls.frozen is not None and cls.frozen != ctx["digest"]:
+            print(f"WARNING: question hash {ctx['digest']} differs from last frozen {cls.frozen}: the adopted "
+                  "answers were judged under different wording than the frozen rubric")
+        slots, exclusions = ctx["slots"], ctx["exclusions"]
+        Q, digest, questions, required = ctx["Q"], ctx["digest"], ctx["questions"], ctx["required"]
+        status = {} if status is None else status
+        if intent is None:
+            intent = status.get("intent")
+        batch_id = status.get("id") if isinstance(status.get("id"), str) and status.get("id") else None
+        # The host reports no per-item completion time, so judged_at is when the answers were adopted.
+        judged_at = round(_jv_time.time(), 3)
+        rows = _JvRows()
+        cache_counts = {"hit": 0, "partial": 0, "miss": 0, "unknown": 0}
+        question_count, cached_count, counts_unknown = 0, 0, 0
+        unresolved, answered_keys = [], []
+        for key in ctx["states"]:
+            item = items.get(key)
+            cache = getattr(item, "cache", None)
+            cache_counts[cache if cache in ("hit", "partial", "miss") else "unknown"] += 1
+            total, cached = getattr(item, "questions", None), getattr(item, "cached_questions", None)
+            if type(total) is int and type(cached) is int and 0 <= cached <= total:
+                question_count += total
+                cached_count += cached
+            else:
+                counts_unknown += 1
+            failure = None if item is not None else "no result delivered"
+            if item is None:
+                unresolved.extend(cls._units(ctx, [key]))
+            elif not cls._item_good(item, questions, required[key]):
+                failure = str(getattr(item, "error", None) or "invalid judge answer")
+                if cls._oversize(item):
+                    failure = f"oversize: Jev max_tokens_exceeded; shrink or split this state ({failure[:400]})"
+            else:
+                answered_keys.append(key)
+            if slots is None:
+                rows.append(cls._flat_row(key, Q, item, digest, failure=failure, batch_id=batch_id,
+                                          state=ctx["states"][key], judged_at=judged_at))
+            else:
+                for index, identifier in enumerate(slots[key]):
+                    rows.append(cls._flat_row(identifier, Q, item, digest, slot=index, group=key,
+                                              failure=failure, batch_id=batch_id,
+                                              state=ctx["states"][key], judged_at=judged_at))
+        coverage_errors, uncertainty = [], []
+        if status.get("error"):
+            coverage_errors.append(str(status["error"]))
+        if status.get("running") is True:
+            coverage_errors.append("host batch was still running: adopted a partial snapshot")
+            uncertainty.append("host batch still running; its cost estimate may still grow")
+        done, host_total = status.get("done"), status.get("total")
+        observed = type(done) is int and type(host_total) is int
+        delivered = sum(key in items for key in ctx["states"])
+        if observed and (done != delivered or host_total != len(ctx["states"])):
+            coverage_errors.append(f"host reported {done} of {host_total} done, but {delivered} of "
+                                   f"{len(ctx['states'])} submitted states delivered a result")
+        host_counts = {"answered": len(answered_keys), "planned": len(ctx["states"]),
+                       "host_done": done if observed else None, "host_total": host_total if observed else None,
+                       "reconciled": observed and done == len(answered_keys) and host_total == len(ctx["states"])}
+        raw_cost = status.get("cost")
+        cost_known = (isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
+                      and _jv_math.isfinite(raw_cost) and status.get("running") is not True)
+        cost = float(raw_cost) if cost_known else 0.0
+        if kind == "items":
+            uncertainty.append("adopted from drained items without batch=: no host batch status, so cost was not observed")
+        elif not cost_known and status.get("running") is not True:
+            uncertainty.append("batch cost not observed")
+        elapsed = status.get("elapsedS")
+        elapsed = float(elapsed) if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) else 0.0
+        models = _jv_collections.Counter(str(row["model"]) for row in rows if row["model"] is not None)
+        errors = sum("error" in row for row in rows)
+        served, served_unknown = cls._served(rows)
+        summary = {"schema": 2, "strategy": "host-judge-batch-grouped" if slots is not None else "host-judge-batch",
+                   "source": kind, "intent": intent, "units": len(rows), "ok": len(rows) - errors,
+                   "errors": errors, "models": dict(models), "status_model": status.get("model"),
+                   "cost": cost, "cost_kind": "batch_estimate", "billing": "estimate_unverified",
+                   "assembly": "single", "served_models": served, "served_unknown": served_unknown,
+                   "comparable": len(served) == 1 and not served_unknown, "host_counts": host_counts,
+                   "cost_known": cost_known, "cost_uncertain": bool(uncertainty), "cost_uncertainty": uncertainty,
+                   "elapsed": elapsed, "qhash": digest, "question_hash": digest,
+                   "frozen_question_hash": cls.frozen, "batch_ids": [batch_id] if batch_id else [],
+                   "batches": [], "unit_ids": ctx["unit_ids"], "original_ids": ctx["original_ids"],
+                   "excluded_ids": [uid for uid in ctx["original_ids"] if uid in exclusions],
+                   "exclusions": exclusions,
+                   "answered_ids": [row["id"] for row in rows if "error" not in row],
+                   "error_ids": [row["id"] for row in rows if "error" in row],
+                   "error_details": {row["id"]: row["error"] for row in rows if "error" in row},
+                   "unresolved_ids": unresolved,
+                   "group_sizes": [] if slots is None else [len(ids) for ids in slots.values()],
+                   "group_slots": {} if slots is None else slots,
+                   "coverage_errors": coverage_errors,
+                   "complete": not errors and not coverage_errors and not exclusions,
+                   "provenance_complete": all(not cls._provenance_unknown(row) for row in rows),
+                   "cache_counts": cache_counts, "questions": question_count,
+                   "cached_questions": cached_count, "question_counts_unknown": counts_unknown,
+                   "selected_models": dict(_jv_collections.Counter(
+                       row["selected_model"] for row in rows if row["selected_model"])),
+                   "primary_models": dict(_jv_collections.Counter(
+                       row["primary_model"] for row in rows if row["primary_model"])),
+                   "resumed": False, "resubmit": False, "bundle": None, "extraction": None, "preflight": None}
+        rows.receipt = summary
+        for row in rows:
+            row["coverage_complete"] = summary["complete"]
+            row["coverage_errors"] = list(coverage_errors)
+        cls.stats["runs"].append(summary)
+        print(f"jevify adopt: {len(rows)} units · {len(rows) - errors} ok · {errors} errors · "
+              f"served={served}{' (+%d unknown)' % served_unknown if served_unknown else ''} · "
+              f"complete={summary['complete']} · reconciled={host_counts['reconciled']} · qhash={digest}")
+        print(_jv_json.dumps({"jevify_receipt": summary}, ensure_ascii=False))
+        return rows
+
+    @classmethod
+    def scalar(cls, value, qid=None):
+        """One answer as a plain value: choice -> label, bool -> P(yes), score -> weighted level index.
+
+        value: a jv row with qid (returns row[qid]); a host answer mapping ({"type": ...}); or a host answers
+        mapping or host item with qid. Anything it cannot reduce raises ValueError naming the problem."""
+        def reduce(answer, name):
+            if not isinstance(answer, dict):
+                raise ValueError(f"{name} answer is {type(answer).__name__}, not a host answer mapping")
+            kind = answer.get("type")
+            try:
+                if kind == "choice":
+                    choice = answer["choice"]
+                    if not isinstance(choice, str):
+                        raise ValueError(f"{name} choice is not a label: {choice!r}")
+                    return choice
+                if kind == "bool":
+                    return cls._fraction(answer["bool"])
+                if kind == "score":
+                    score = float(answer["score"])
+                    if not _jv_math.isfinite(score):
+                        raise ValueError(f"{name} score is not finite: {score!r}")
+                    return score
+            except KeyError as missing:
+                raise ValueError(f"{name} {kind} answer lacks {missing.args[0]!r}") from None
+            except TypeError as error:
+                raise ValueError(f"{name} {kind} answer is malformed: {error}") from None
+            raise ValueError(f"{name} answer has unknown type {kind!r}; expected choice, bool or score")
+
+        if isinstance(value, dict) and "id" in value and "qhash" in value:
+            if qid is None:
+                raise ValueError("scalar of a row requires qid")
+            if "error" in value:
+                raise ValueError(f"row {value['id']!r} has no {qid!r} answer: {value['error']}")
+            if qid not in value:
+                raise ValueError(f"row {value['id']!r} has no column {qid!r}")
+            return value[qid]
+        if isinstance(value, dict) and "type" in value:
+            return reduce(value, "host" if qid is None else repr(qid))
+        if not isinstance(value, dict) and hasattr(value, "answers"):
+            if qid is None:
+                raise ValueError("scalar of a host item requires qid")
+            answers = getattr(value, "answers", None)
+            if not isinstance(answers, dict) or qid not in answers:
+                raise ValueError(f"host item has no {qid!r} answer: "
+                                 f"{getattr(value, 'error', None) or 'answers missing'}")
+            return reduce(answers[qid], repr(qid))
+        if not isinstance(value, dict):
+            raise ValueError(f"scalar accepts a host answer, host item or jv row, not {type(value).__name__}")
+        if qid is None:
+            raise ValueError("scalar of an answers mapping requires qid")
+        if qid in value:
+            return reduce(value[qid], repr(qid))
+        raise ValueError(f"mapping has no {qid!r} answer")
 
     @classmethod
     def uncertainty(cls, row, qid, question):
@@ -2218,6 +3118,298 @@ class jv:
             return "yes" if value >= 0.5 else "no"
         return _jv_math.floor(value + 0.5)
 
+    BAND = (0.3, 0.7)
+    _POWER_Z = {0.9: 1.6448536269514722, 0.95: 1.959963984540054, 0.99: 2.5758293035489004}
+
+    @classmethod
+    def _bound_rows(cls, rows, Q, name):
+        """Refuse rows carrying a rubric hash other than this Q's; rows without one are taken as given."""
+        digest = cls.qhash(Q)
+        foreign = sorted({str(row.get("qhash")) for row in rows
+                          if row.get("qhash") is not None and row.get("qhash") != digest})
+        if foreign:
+            raise ValueError(f"{name} were judged under another rubric ({', '.join(foreign)}), not qhash {digest}")
+
+    @classmethod
+    def _in_band(cls, row, Q):
+        """True when any choice top probability lies in [0.3, 0.7) or any bool P(yes) in [0.3, 0.7]."""
+        lo, hi = cls.BAND
+        for qid, question in Q.items():
+            if question["type"] not in ("choice", "bool"):
+                continue
+            try:
+                measures = cls.uncertainty(row, qid, question)
+            except KeyError as error:
+                raise ValueError(f"row {row.get('id')!r} lacks {qid} answer columns ({error})") from None
+            if question["type"] == "choice" and lo <= measures["top_probability"] < hi:
+                return True
+            if question["type"] == "bool" and lo <= measures["p_yes"] <= hi:
+                return True
+        return False
+
+    @classmethod
+    def pilot_check(cls, rows, Q, *, rule=None, max_flag_rate=0.4, max_band_rate=0.4, catchall=(),
+                    max_catchall_rate=0.4, min_units=10):
+        """Decide from a pilot whether a full Jev sweep is worth running, before paying for it.
+
+        Uses the frozen escalation rule: `rule` from jv.policy_rule(), else flag()'s defaults (errors,
+        incomplete coverage, fallback). "provenance_unknown" is excluded from the flag rate: stock hosts never
+        report selected/primary model, fallback or cache fields, so it is true on every row and says nothing
+        about this pilot. A row flagged only for provenance is counted in `provenance_only`, not `flagged`.
+
+        Rates: flag_rate = flagged units / all units (errors are flagged); band_rate = answered rows with any
+        choice top probability in [0.3, 0.7) or bool P(yes) in [0.3, 0.7] (score questions have no band);
+        catchall = {qid: share of answered rows whose label is in catchall[qid]}, e.g.
+        {"verdict": ["other", "unrelated"]}. Any rate strictly above its max -> "use_direct". Fewer than
+        `min_units` answered rows -> "too_small", whatever the rates. Otherwise "proceed".
+        Returns {verdict, units, answered, flagged, provenance_only, flag_rate, band, band_rate, catchall,
+        errors, reasons}. A "proceed" verdict is not a quality claim; flagged rows still need source reads.
+        """
+        for name, value in (("max_flag_rate", max_flag_rate), ("max_band_rate", max_band_rate),
+                            ("max_catchall_rate", max_catchall_rate)):
+            cls._fraction(value)
+        if type(min_units) is not int or min_units < 1:
+            raise ValueError("min_units must be a positive integer")
+        catch = dict(catchall) if catchall else {}
+        for qid, labels in catch.items():
+            if qid not in Q or Q[qid]["type"] != "choice":
+                raise ValueError(f"catchall names {qid!r}, which is not a choice question in Q")
+            if isinstance(labels, str) or not labels:
+                raise ValueError(f"catchall for {qid!r} must be a nonempty list of labels")
+            unknown = [label for label in labels if label not in Q[qid]["criteria"]]
+            if unknown:
+                raise ValueError(f"catchall for {qid!r} names unknown labels {unknown}")
+        cls._bound_rows(rows, Q, "pilot rows")
+        units = len(rows)
+        answered = [row for row in rows if "error" not in row]
+        errors = units - len(answered)
+        flagged_rows = cls.flag(rows, rule) if rows else []
+        counted = [row for row in flagged_rows if any(why != "provenance_unknown" for why in row["why"])]
+        band = sum(cls._in_band(row, Q) for row in answered)
+        flag_rate = len(counted) / units if units else 0.0
+        band_rate = band / len(answered) if answered else 0.0
+        rates = {qid: (sum(row.get(qid) in labels for row in answered) / len(answered) if answered else 0.0)
+                 for qid, labels in catch.items()}
+        result = {"verdict": "proceed", "units": units, "answered": len(answered), "flagged": len(counted),
+                  "provenance_only": len(flagged_rows) - len(counted), "flag_rate": flag_rate, "band": band,
+                  "band_rate": band_rate, "catchall": rates, "errors": errors, "reasons": []}
+        if len(answered) < min_units:
+            result["verdict"] = "too_small"
+            result["reasons"].append(f"{len(answered)} answered units (errors {errors}) < min_units {min_units}; "
+                                     "pilot cannot decide; judge more units or read them directly")
+            return result
+        advice = "; read these units directly or write a deterministic script instead of a Jev sweep"
+        if flag_rate > max_flag_rate:
+            result["reasons"].append(f"flag_rate {flag_rate:.2f} > {max_flag_rate}: {len(counted)}/{units} units "
+                                     "flagged by errors, coverage or the rule (provenance_unknown excluded)" + advice)
+        if band_rate > max_band_rate:
+            result["reasons"].append(f"band_rate {band_rate:.2f} > {max_band_rate}: {band}/{len(answered)} answers "
+                                     "sit in the uncertain band [0.3, 0.7]" + advice)
+        for qid, rate in rates.items():
+            if rate > max_catchall_rate:
+                result["reasons"].append(f"catchall {qid} rate {rate:.2f} > {max_catchall_rate}: labels "
+                                         f"{list(catch[qid])} absorb the pilot, so the rubric does not fit" + advice)
+        if result["reasons"]:
+            result["verdict"] = "use_direct"
+        return result
+
+    @classmethod
+    def remaining(cls, states, prior_rows, Q):
+        """Split states into (todo_states, reused_rows) so pilot verdicts are not paid for twice.
+
+        A prior row is reused only when it has no error, is not a grouped row (grouped verdicts depend on
+        their group mates), carries qhash == jv.qhash(Q), and its state_sha256 equals
+        jv.state_digest(states[id]). Anything else, including rows without a digest, is judged again.
+        Reused rows are copies; combining them with a later run is a splice and must be reported as such.
+        """
+        if not isinstance(states, dict):
+            raise ValueError("states must be a dict of unit id -> state")
+        digest = cls.qhash(Q)
+        reusable = {}
+        for row in prior_rows:
+            identifier = row.get("id")
+            if (identifier not in states or identifier in reusable or "error" in row or "group" in row
+                    or row.get("qhash") != digest or row.get("state_sha256") is None):
+                continue
+            if row["state_sha256"] == cls.state_digest(states[identifier]):
+                reusable[identifier] = dict(row)
+        todo = {identifier: state for identifier, state in states.items() if identifier not in reusable}
+        reused = [reusable[identifier] for identifier in states if identifier in reusable]
+        print(f"remaining: {len(todo)} to judge · {len(reused)} reused (same rubric and state digest)")
+        return todo, reused
+
+    @classmethod
+    def _moved(cls, before, after, question, margin):
+        """True when one primitive answer differs: another choice label, or bool/score moved by more than
+        `margin` (score on the 0..1 scale of its level range)."""
+        if question["type"] == "choice":
+            return before != after
+        scale = 1.0 if question["type"] == "bool" else max(len(question["criteria"]) - 1, 1)
+        return abs(float(after) - float(before)) / scale > margin
+
+    @classmethod
+    def gate(cls, baseline_rows, current_rows, Q, *, qid, margin=0.15, rejudge_rows=None):
+        """Regression gate between two sweeps of one rubric, separating real regressions from judge noise.
+
+        Per unit in either set: missing from a set, an error row, or a missing qid answer -> unknown. Same
+        verdict -> unchanged (same or missing digests) or source_changed (digests differ). Changed verdict
+        (choice label differs, bool/score moved by more than `margin`): missing state_sha256 -> unknown;
+        identical digests -> noise (the input did not change, so the judge did); differing digests -> regression
+        only when a rejudge row of the current state repeats the current verdict, noise when the rejudge
+        disagrees, unconfirmed when there is no usable rejudge row. Rows judged under another rubric than Q
+        (any qhash differing) raise ValueError: a different rubric is not comparable. qhash_mismatch is
+        therefore always False in a returned result.
+        """
+        if qid not in Q:
+            raise ValueError(f"gate names unknown question {qid!r}")
+        question = Q[qid]
+        margin = cls._fraction(margin)
+        rejudge_rows = list(rejudge_rows or [])
+        for name, rows in (("baseline rows", baseline_rows), ("current rows", current_rows),
+                           ("rejudge rows", rejudge_rows)):
+            cls._bound_rows(rows, Q, name)
+
+        def index(rows):
+            return {row.get("id"): row for row in rows}
+
+        baseline, current, rejudge = index(baseline_rows), index(current_rows), index(rejudge_rows)
+        result = {"regressions": [], "noise": [], "unconfirmed": [], "source_changed": [], "unchanged": [],
+                  "unknown": [], "qhash_mismatch": False}
+        for identifier in list(dict.fromkeys([*baseline, *current])):
+            before, after = baseline.get(identifier), current.get(identifier)
+            if (before is None or after is None or "error" in before or "error" in after
+                    or before.get(qid) is None or after.get(qid) is None):
+                result["unknown"].append(identifier)
+                continue
+            old_digest, new_digest = before.get("state_sha256"), after.get("state_sha256")
+            if not cls._moved(before[qid], after[qid], question, margin):
+                changed_source = old_digest is not None and new_digest is not None and old_digest != new_digest
+                result["source_changed" if changed_source else "unchanged"].append(identifier)
+                continue
+            if old_digest is None or new_digest is None:
+                result["unknown"].append(identifier)
+            elif old_digest == new_digest:
+                result["noise"].append(identifier)
+            else:
+                again = rejudge.get(identifier)
+                if (again is None or "error" in again or again.get(qid) is None
+                        or again.get("state_sha256") != new_digest):
+                    result["unconfirmed"].append(identifier)
+                elif cls._moved(after[qid], again[qid], question, margin):
+                    result["noise"].append(identifier)
+                else:
+                    result["regressions"].append(identifier)
+        print("gate: " + " · ".join(f"{key}={len(value)}" for key, value in result.items()
+                                    if isinstance(value, list)))
+        return result
+
+    @classmethod
+    def power(cls, *, rate=0.5, margin=0.1, confidence=0.95):
+        """Units needed to estimate a binomial proportion near `rate` within ±`margin` at `confidence`
+        (normal approximation, rounded up). confidence is one of 0.9, 0.95, 0.99. rate=0.5 is the worst case."""
+        if confidence not in cls._POWER_Z:
+            raise ValueError(f"confidence must be one of {sorted(cls._POWER_Z)}")
+        rate, margin = float(rate), float(margin)
+        if not 0 < rate < 1 or not 0 < margin < 1:
+            raise ValueError("rate and margin must lie strictly between 0 and 1")
+        z = cls._POWER_Z[confidence]
+        return _jv_math.ceil(z * z * rate * (1 - rate) / (margin * margin))
+
+    class Ledger:
+        """Append-only JSONL ledger of which unit ids were used for what, and who labeled gold.
+
+        record(ids, purpose=..., labeler=None, labeler_kind=None) appends one fsynced line under an exclusive
+        flock. purpose: "tune" | "heldout" | "gold"; labeler_kind: "human" | "agent" | "script" | "external"
+        (required for gold). Recording an id already used for "tune" as "heldout" is refused with ValueError
+        and records nothing: tuned units cannot serve as held-out evidence. independent_gold() splits gold ids
+        into independent (some human or external label) and not_independent (agent or script labels only).
+        """
+
+        PURPOSES = ("tune", "heldout", "gold")
+        KINDS = ("human", "agent", "script", "external")
+
+        def __init__(self, path):
+            self.path = _jv_pathlib.Path(path)
+
+        def _read(self, handle):
+            """Parse the ledger; a torn final line (no newline) is cut, any other bad line is refused."""
+            handle.seek(0)
+            data = handle.read()
+            end = data.rfind(b"\n") + 1
+            if end < len(data):
+                handle.truncate(end)
+                handle.flush()
+                _jv_os.fsync(handle.fileno())
+            entries = []
+            for number, raw in enumerate(data[:end].split(b"\n")[:-1], start=1):
+                try:
+                    entry = _jv_json.loads(raw)
+                except ValueError:
+                    raise ValueError(f"ledger {self.path} line {number} is corrupt") from None
+                if not isinstance(entry, dict) or entry.get("purpose") not in self.PURPOSES:
+                    raise ValueError(f"ledger {self.path} line {number} is not a ledger entry")
+                entries.append(entry)
+            return entries
+
+        def _locked(self, act):
+            fcntl = _JvBundle._flock()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "a+b") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    return act(handle, self._read(handle))
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+        def entries(self):
+            return self._locked(lambda handle, entries: entries)
+
+        def record(self, ids, *, purpose, labeler=None, labeler_kind=None):
+            ids = list(ids) if not isinstance(ids, str) else None
+            if not ids or not all(isinstance(identifier, str) and identifier for identifier in ids):
+                raise ValueError("ids must be a nonempty list of string unit ids")
+            if purpose not in self.PURPOSES:
+                raise ValueError(f"purpose must be one of {self.PURPOSES}")
+            if labeler_kind is not None and labeler_kind not in self.KINDS:
+                raise ValueError(f"labeler_kind must be one of {self.KINDS}")
+            if purpose == "gold" and labeler_kind is None:
+                raise ValueError("gold needs labeler_kind, or its independence cannot be established")
+
+            def act(handle, entries):
+                if purpose == "heldout":
+                    tuned = {identifier for entry in entries if entry["purpose"] == "tune"
+                             for identifier in entry["ids"]}
+                    reused = sorted(set(ids) & tuned)
+                    if reused:
+                        raise ValueError(f"held-out reuse refused: {reused} were already used for tuning")
+                entry = {"ids": ids, "purpose": purpose, "labeler": labeler, "labeler_kind": labeler_kind,
+                         "at": round(_jv_time.time(), 3)}
+                handle.seek(0, _jv_os.SEEK_END)
+                handle.write((_jv_json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+                             .encode("utf-8"))
+                handle.flush()
+                _jv_os.fsync(handle.fileno())
+                return entry
+
+            return self._locked(act)
+
+        def independent_gold(self):
+            kinds = _jv_collections.defaultdict(set)
+            for entry in self.entries():
+                if entry["purpose"] == "gold":
+                    for identifier in entry["ids"]:
+                        kinds[identifier].add(entry["labeler_kind"])
+            independent = sorted(identifier for identifier, found in kinds.items()
+                                 if found & {"human", "external"})
+            return {"independent": independent,
+                    "not_independent": sorted(set(kinds) - set(independent)),
+                    "labeler_kinds": {identifier: sorted(found) for identifier, found in sorted(kinds.items())}}
+
+    @classmethod
+    def ledger(cls, path):
+        """Open the held-out/labeler ledger at `path` (created on first record). See jv.Ledger."""
+        return cls.Ledger(path)
+
     @classmethod
     async def sensitivity(cls, states, Q, *, intent, max_variants, permutations=None, contexts=None,
                           grouping=None, concurrency=32, retries=1, timeout=1800):
@@ -2310,8 +3502,13 @@ class jv:
                 "counts": counts, "warnings": warnings}
 
     @classmethod
-    def flag(cls, rows, rule=None):
-        """Escalate incomplete coverage independently of answer errors and provenance."""
+    def flag(cls, rows, rule=None, *, report=None):
+        """Escalate incomplete coverage independently of answer errors and provenance.
+
+        `report` is the dict jv.states()/jv.group() filled. A row whose id (or whose `group` state id)
+        was truncated, found oversize, or left unmeasured there is also flagged "truncated",
+        "oversize" or "unmeasured": the judge saw less than the unit, so its answer needs a source read.
+        Without a report nothing about truncation is inferred."""
         receipt = getattr(rows, "receipt", None)
         incomplete = receipt is not None and receipt.get("complete") is not True
         if not rows and (receipt is None or incomplete):
@@ -2332,6 +3529,17 @@ class jv:
                     reason = rule(row)
                     if reason:
                         why.append(reason if isinstance(reason, str) else "rule")
+            if report is not None:
+                outcome = report.get(row.get("id"))
+                if outcome is None and row.get("group") is not None:
+                    outcome = report.get(row["group"])
+                if isinstance(outcome, dict):
+                    if (outcome.get("truncated") or 0) > 0:
+                        why.append("truncated")
+                    if outcome.get("oversize"):
+                        why.append("oversize")
+                    if outcome.get("unmeasured"):
+                        why.append("unmeasured")
             if why:
                 copy = dict(row)
                 copy["why"] = why
@@ -2348,7 +3556,7 @@ class jv:
         metadata = {"id", "model", "qhash", "group", "slot", "why", "batch_id",
                     "selected_model", "primary_model", "fallback", "response_model", "cache",
                     "questions", "cached_questions", "provenance_unknown",
-                    "coverage_complete", "coverage_errors"}
+                    "coverage_complete", "coverage_errors", "state_sha256", "judged_at", "assembly"}
         for entry in rows[:limit]:
             row = entry if isinstance(entry, dict) else {"id": entry}
             identifier = row["id"]
@@ -2576,6 +3784,230 @@ class jv:
         return {"bins": bins, "thresholds": thresholds, "verdicts": verdicts, "evidence": evidence}
 
     @staticmethod
+    def state_digest(state):
+        """sha256 hex of the canonical JSON of the state a row was judged on; binds a row to its input."""
+        return jv._digest(state)
+
+    @staticmethod
+    def _part(rows):
+        """Receipt summary of one set of rows: what was judged, how much was answered, and by which batches."""
+        receipt = getattr(rows, "receipt", None) or {}
+        answered = receipt.get("answered_ids")
+        if not isinstance(answered, list):
+            answered = [row.get("id") for row in rows if "error" not in row]
+        if receipt.get("assembly") == "spliced":
+            return list(receipt.get("parts") or [])
+        return [{"intent": receipt.get("intent"), "qhash": receipt.get("qhash"),
+                 "units": len(rows), "answered": len(answered),
+                 "batch_ids": list(receipt.get("batch_ids") or [])}]
+
+    @classmethod
+    def splice(cls, base_rows, patch_rows):
+        """Replace base rows by id with re-judged patch rows. The result is never a single full sweep: its
+        receipt says spliced, lists both parts and the replaced ids, and patch rows are marked spliced-patch.
+        It is complete only when every id is answered and neither part reported coverage errors or exclusions."""
+        parts_in = []
+        for label, rows in (("base", base_rows), ("patch", patch_rows)):
+            receipt = getattr(rows, "receipt", None)
+            if not isinstance(receipt, dict):
+                raise ValueError(f"splice needs {label} rows that carry their run receipt")
+            ids = [row.get("id") for row in rows]
+            if len(set(ids)) != len(ids):
+                raise ValueError(f"splice refuses duplicate ids in {label} rows")
+            parts_in.append((receipt, ids))
+        (base_receipt, base_ids), (patch_receipt, patch_ids) = parts_in
+        digests = {base_receipt.get("qhash"), patch_receipt.get("qhash"),
+                   *(row.get("qhash") for row in base_rows), *(row.get("qhash") for row in patch_rows)}
+        if len(digests) != 1 or None in digests:
+            raise ValueError(f"splice refuses different question hashes: {sorted(map(str, digests))}")
+        digest = digests.pop()
+        base_set = set(base_ids)
+        unknown = [uid for uid in patch_ids if uid not in base_set]
+        if unknown:
+            raise ValueError(f"splice refuses patch ids absent from the base rows: {unknown[:10]}")
+        patch = {row["id"]: row for row in patch_rows}
+        rows = _JvRows()
+        for row in base_rows:
+            if row["id"] in patch:
+                replacement = dict(patch[row["id"]])
+                replacement["assembly"] = "spliced-patch"
+                rows.append(replacement)
+            else:
+                rows.append(dict(row))
+        errors = [row["id"] for row in rows if "error" in row]
+        coverage_errors = [*(base_receipt.get("coverage_errors") or []), *(patch_receipt.get("coverage_errors") or [])]
+        exclusions = {**(base_receipt.get("exclusions") or {}), **(patch_receipt.get("exclusions") or {})}
+        complete = not errors and not coverage_errors and not exclusions
+        served, served_unknown = cls._served(rows)
+        for row in rows:
+            row["coverage_complete"] = complete
+            row["coverage_errors"] = list(coverage_errors)
+        parts = [*cls._part(base_rows), *cls._part(patch_rows)]
+        ids = [row["id"] for row in rows]
+        batch_ids = [batch for part in parts for batch in part["batch_ids"]]
+        receipt = {
+            "schema": 2, "strategy": "spliced", "assembly": "spliced", "parts": parts,
+            "intent": f"spliced: {len(patch)} of {len(rows)} re-judged",
+            "replaced_ids": [uid for uid in base_ids if uid in patch],
+            "units": len(rows), "ok": len(rows) - len(errors), "errors": len(errors),
+            "qhash": digest, "question_hash": digest, "unit_ids": ids,
+            "original_ids": list(base_receipt.get("original_ids") or ids),
+            "answered_ids": [uid for uid in ids if uid not in errors], "error_ids": errors,
+            "error_details": {row["id"]: row["error"] for row in rows if "error" in row},
+            "excluded_ids": [], "exclusions": exclusions, "unresolved_ids": [],
+            "coverage_errors": coverage_errors, "complete": complete,
+            "batch_ids": batch_ids,
+            "models": dict(_jv_collections.Counter(str(row["model"]) for row in rows if row.get("model"))),
+            "served_models": served, "served_unknown": served_unknown,
+            "comparable": len(served) == 1 and not served_unknown,
+            "host_counts": {"answered": len(ids) - len(errors), "planned": None, "host_done": None,
+                            "host_total": None, "reconciled": False},
+            "cost": sum((part.get("cost") or 0.0) for part in (base_receipt, patch_receipt)),
+            "cost_kind": "batch_estimate", "billing": "estimate_unverified",
+            "cost_known": all(part.get("cost_known") is True for part in (base_receipt, patch_receipt)),
+            "provenance_complete": all(not cls._provenance_unknown(row) for row in rows if "error" not in row),
+        }
+        rows.receipt = receipt
+        print(f"spliced: {len(patch)} of {len(rows)} re-judged · {len(errors)} errors · "
+              f"complete={complete} · qhash={digest}")
+        return rows
+
+    @classmethod
+    def comparable(cls, rows_a, rows_b):
+        """Whether two row sets may be compared as one measurement: the same question hash and the same single,
+        known served model. A row with no served model makes the pair not comparable."""
+        reasons, served = [], []
+        for label, rows in (("A", rows_a), ("B", rows_b)):
+            if not len(rows):
+                reasons.append(f"{label}: no rows")
+            receipt = getattr(rows, "receipt", None) or {}
+            digests = {row.get("qhash") for row in rows} | ({receipt["qhash"]} if receipt.get("qhash") else set())
+            if len(digests) > 1:
+                reasons.append(f"{label}: mixed question hashes {sorted(map(str, digests))}")
+            served.append((digests, cls._served(rows)))
+        (digests_a, (models_a, unknown_a)), (digests_b, (models_b, unknown_b)) = served
+        if len(digests_a) == 1 and len(digests_b) == 1 and digests_a != digests_b:
+            reasons.append(f"question hashes differ: {sorted(digests_a)} vs {sorted(digests_b)}")
+        for label, models, unknown in (("A", models_a, unknown_a), ("B", models_b, unknown_b)):
+            if unknown:
+                reasons.append(f"{label}: {unknown} answered row(s) have an unknown served model")
+            if len(models) > 1:
+                reasons.append(f"{label}: several served models {sorted(models)}")
+        if models_a and models_b and set(models_a) != set(models_b):
+            reasons.append(f"served models differ: {sorted(models_a)} vs {sorted(models_b)}")
+        return {"comparable": not reasons, "reasons": reasons}
+
+    @staticmethod
+    def _cell(value):
+        if isinstance(value, float):
+            value = round(value, 3)
+        elif isinstance(value, (list, tuple)):
+            value = "; ".join(str(item) for item in value)
+        text = "" if value is None else str(value)
+        return text.replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+    @classmethod
+    def export(cls, rows, path=None, *, Q, review=None, rule_flags=None, format="md"):
+        """One table or JSONL record per row. judge_flag comes from jv.flag; rule_flags is the caller's own
+        regex/script findings in a separate column and is never merged. review_status is unreviewed unless a
+        durable review path is given. Returns the text and writes it when path is given."""
+        if format not in ("md", "jsonl"):
+            raise ValueError("format must be 'md' or 'jsonl'")
+        rule_flags = {} if rule_flags is None else rule_flags
+        if (not isinstance(rule_flags, dict)
+                or any(not isinstance(key, str) or not isinstance(value, (list, tuple, str))
+                       for key, value in rule_flags.items())):
+            raise ValueError("rule_flags must map string ids to a reason or list of reasons")
+        known = {row["id"] for row in rows}
+        absent = sorted(set(rule_flags) - known)
+        if absent:
+            raise ValueError(f"rule_flags name ids that are not rows: {absent[:10]}")
+        judged = {row["id"]: row["why"] for row in cls.flag(rows)}
+        reviewed = {}
+        if review is not None:
+            for entry in cls.review_items(review, Q=Q):
+                reviewed.setdefault(entry["unit"], []).append(entry)
+
+        def status(identifier):
+            entries = reviewed.get(identifier)
+            if not entries:
+                return "unreviewed"
+            if any(entry["stale"] for entry in entries):
+                return "stale"
+            verdicts = {entry["verdict"] or "pending" for entry in entries}
+            return verdicts.pop() if len(verdicts) == 1 else "mixed"
+
+        answers = [name for qid, question in Q.items() for name in cls._answer_columns(qid, question)
+                   if not name.endswith((".dist", ".legend"))]
+        records = []
+        for row in rows:
+            identifier = row["id"]
+            reasons = rule_flags.get(identifier, [])
+            digest = row.get("state_sha256")
+            records.append({
+                "id": identifier, **{name: row.get(name) for name in answers}, "error": row.get("error"),
+                "judge_flag": judged.get(identifier, []),
+                "rule_flags": [reasons] if isinstance(reasons, str) else list(reasons),
+                "review_status": status(identifier), "assembly": row.get("assembly"),
+                "judged_at": row.get("judged_at"), "state_sha256": digest[:12] if digest else None})
+        if format == "jsonl":
+            text = "".join(_jv_json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+        else:
+            columns = list(records[0]) if records else ["id"]
+            lines = ["| " + " | ".join(cls._cell(column) for column in columns) + " |",
+                     "| " + " | ".join("---" for _ in columns) + " |"]
+            lines += ["| " + " | ".join(cls._cell(record[column]) for column in columns) + " |"
+                      for record in records]
+            text = "\n".join(lines) + "\n"
+        if path is not None:
+            with open(path, "w", encoding="utf-8") as output:
+                output.write(text)
+        return text
+
+    @classmethod
+    def receipt_md(cls, rows):
+        """Markdown block stating what the receipt supports and what it does not."""
+        receipt = getattr(rows, "receipt", None)
+        if not isinstance(receipt, dict):
+            return "- No run receipt: coverage, served models and cost are unknown.\n- Judge estimates, not source-confirmed.\n"
+        answered = len(receipt.get("answered_ids") or [])
+        out = [f"- Units: {receipt.get('units', len(rows))}; answered: {answered}; "
+               f"errors: {receipt.get('errors', sum('error' in row for row in rows))}."]
+        if receipt.get("assembly") == "spliced":
+            replaced = receipt.get("replaced_ids") or []
+            out.append(f"- Assembly: spliced: {len(replaced)} of {receipt.get('units', len(rows))} re-judged; "
+                       "not a single full sweep.")
+            for part in receipt.get("parts") or []:
+                out.append(f"  - part {part.get('intent')!r}: {part.get('units')} units, "
+                           f"{part.get('answered')} answered, batches {part.get('batch_ids')}.")
+        else:
+            out.append(f"- Assembly: {receipt.get('assembly', 'single')} run, intent {receipt.get('intent')!r}.")
+        out.append(f"- Complete coverage: {receipt.get('complete') is True}.")
+        served = receipt.get("served_models") or {}
+        unknown = receipt.get("served_unknown") or 0
+        out.append(f"- Served models: {served or 'none'}"
+                   + (f" (+{unknown} answered row(s) with unknown served model)" if unknown else "")
+                   + f"; comparable across rows: {receipt.get('comparable') is True}.")
+        cost = receipt.get("cost")
+        out.append("- Cost: " + (f"{cost:.6g} USD batch estimate, unverified (priced by host)"
+                                  if isinstance(cost, (int, float)) else "unknown")
+                   + (f"; cost observed for every batch: {receipt.get('cost_known') is True}."))
+        counts = receipt.get("host_counts")
+        if isinstance(counts, dict) and counts.get("host_done") is not None:
+            out.append(f"- Host counts: answered {counts.get('answered')}, host reported "
+                       f"{counts.get('host_done')} of {counts.get('host_total')} done; "
+                       f"reconciled: {counts.get('reconciled') is True}.")
+        else:
+            out.append("- Host counts: not observed, so answered units are not reconciled with the host.")
+        unrouted = sum(1 for row in rows if "error" not in row and cls._provenance_unknown(row))
+        out.append("- Provenance: " + ("route, fallback and cache reported for every answered row."
+                                       if not unrouted else
+                                       f"route, fallback or cache unknown for {unrouted} answered row(s) "
+                                       "(stock hosts report only the served model)."))
+        out.append("- These are judge estimates, not source-confirmed.")
+        return "\n".join(out) + "\n"
+
+    @staticmethod
     def save(rows, path="/tmp/jevify-rows.jsonl"):
         """Write a receipt header followed by rows, retaining empty-run coverage evidence."""
         with open(path, "w", encoding="utf-8") as output:
@@ -2624,19 +4056,30 @@ class jv:
         return rows
 
     @classmethod
-    def delete_spans(cls, units, ids, *, root=".", dry_run=True, manifest=None, review=None):
-        """Delete the spans of `ids`. With `manifest`, each target must match its extraction record and
-        the current source snapshot; with `review`, each target needs a confirmed decision and no review
-        item may be pending. Failures raise before any file is written, including in dry runs."""
+    def delete_spans(cls, units, ids, *, root=".", dry_run=True, manifest=None, review=None, Q=None):
+        """Delete the spans of `ids`. With `manifest`, each target must match its extraction record and the
+        current source snapshot. With `review` (a durable review path) and `Q`, the review must be complete,
+        current, and confirmed for every target; its lock is held through the write. Failures raise before any
+        file is written, including in dry runs. A review grants no edit authority beyond this explicit call."""
+        if review is not None and (manifest is None or Q is None):
+            raise ValueError("review requires the extraction manifest and question set it adjudicates")
+        bundle = None if review is None else cls._open_review(review)
+        try:
+            return cls._delete_units(units, ids, root=root, dry_run=dry_run, manifest=manifest,
+                                     bundle=bundle, Q=Q)
+        finally:
+            if bundle is not None:
+                bundle.release()
+
+    @classmethod
+    def _delete_units(cls, units, ids, *, root, dry_run, manifest, bundle, Q):
         root_path = _jv_pathlib.Path(root).resolve()
         selected = set(ids)
         missing = selected - units.keys()
         if missing:
             print(f"warning: {len(missing)} ids missing from units: {sorted(missing)[:10]}")
         if manifest is not None:
-            cls._guard_deletion(units, sorted(selected & units.keys()), manifest, review, root)
-        elif review is not None:
-            raise ValueError("review requires the extraction manifest it adjudicates")
+            cls._guard_deletion(units, sorted(selected & units.keys()), manifest, bundle, Q, root)
         per_file = _jv_collections.defaultdict(list)
         for uid in selected & units.keys():
             unit = units[uid]
@@ -2706,11 +4149,18 @@ class jv:
                            + (f"{sum(good) / len(good):.2f}" if good else "n/a") + ".")
         run = getattr(rows, "receipt", None)
         if run is not None:
+            elapsed = run.get("elapsed")
             out.append(f"- Bound run: {run['units']} units, {run['ok']} ok, "
                        f"{run['errors']} errors, models={run['models']}, "
-                       f"batch cost estimate={run['cost']:.6g}, elapsed={run['elapsed']:.1f}s.")
+                       f"batch cost estimate (unverified, priced by host)={run['cost']:.6g}, "
+                       f"elapsed={'unknown' if elapsed is None else f'{elapsed:.1f}s'}.")
+            out.append(f"- Assembly: {run.get('assembly', 'single')}"
+                       + (f" ({len(run.get('replaced_ids') or [])} of {run['units']} re-judged; "
+                          "not a single full sweep)" if run.get("assembly") == "spliced" else "")
+                       + f"; served models={run.get('served_models', 'unknown')}; "
+                       f"comparable={run.get('comparable', 'unknown')}.")
             out.append(f"- Run coverage complete: {run['complete']}; "
-                       f"cache counts={run['cache_counts']}; host batches={run['batch_ids']}.")
+                       f"cache counts={run.get('cache_counts', 'unknown')}; host batches={run['batch_ids']}.")
             out.append(f"- Original units: {len(run['original_ids'])}; "
                        f"submitted units: {len(run['unit_ids'])}; excluded units: {len(run['excluded_ids'])}.")
             if run["exclusions"]:
