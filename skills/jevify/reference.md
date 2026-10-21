@@ -284,7 +284,7 @@ collisions gain `#2`, `#3`, and so on.
 | `jv.EDGES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.01)` | Default left-closed numeric bins. |
 | `jv.stats = {"states": {...}, "runs": [...]}` | Latest state summary, replaced on each build, and appended run summaries. |
 | `jv.frozen = None \| qhash` | Hash from the latest `jv.freeze` call. |
-| `jv.choice(instructions, criteria=None, **labels) -> dict` | Choice question; at least two labels, with no duplicates. |
+| `jv.choice(instructions, criteria=None, **labels) -> dict` | Choice question; at least two labels, with no duplicates, and at most `jv.MAX_LABELS` (255, the label count measured on the jev-1.13 route; route-specific) or `ValueError`. |
 | `jv.yes(instructions, *, true=None, false=None) -> dict` | Bool question; criteria included only when supplied. |
 | `jv.scale(instructions, *levels) -> dict` | Score question; at least two levels, low to high. |
 | `jv.qhash(Q, *, ordered=True) -> str` | Ordered question/choice identity. `ordered=False` gives a base rubric identity only, never experiment or cache equivalence. |
@@ -295,12 +295,15 @@ collisions gain `#2`, `#3`, and so on.
 | `jv.dep(dist, module=None) -> module` | Import, or install with `uv` and fall back to `python -m pip`. |
 | `jv.line_units(source, *, keep=None, drop=None, normalize=True, examples=3)` | Path, text, or lines grouped into normalized signatures. |
 | `jv.states(units, render=None, *, cap=None, report=None) -> {id: state}` | Render/cap strings and drop empty states; a supplied report retains per-original reasons and truncation. |
-| `jv.plan(states, Q, *, grouping=None, total_budget=64_000, single_budget=32_000, headroom=0.10, framing=512, sizer=None)` | Check state plus all/longest questions, including slot expansion. No inference calls; unknown sizing is not admission. |
+| `jv.plan(states, Q, *, grouping=None, total_budget=64_000, single_budget=32_000, headroom=0.10, framing=512, sizer=None)` | Check state plus all/longest questions, including slot expansion. No inference calls; unknown sizing is not admission. Also returns `labels` (per choice question), `over_labels` (choice questions above `MAX_LABELS`, which make the plan inadmissible) and `pack_suggestion` (None, or a note when many tiny flat states leave requests nearly empty; plan never packs for you). The 32k `single_budget` stays under the measured jev-1.13 limit of about 32.7k input tokens (route-specific). |
 | `jv.pack(units, render, Q, *, by=None, k=8, shared=None, ...) -> (states, grouping)` | Budget-aware grouping with no truncation; exclusions retain reasons. Accepts the same budgeting knobs as `plan`. |
 | `jv.extraction(units, states, *, grouping=None, outcomes=None, root=".", revision=None, hits=None)` | Freeze file/unit/state identities, locations, per-original outcomes and independent source-hit mapping. |
 | `jv.validate_extraction(manifest, states=None, *, grouping=None, root=None)` | Check manifest identity, source drift and coverage separately. |
-| `jv.review_queue(manifest, items, *, policy, root=None)` | Create source-bound review records and frozen policy identity. |
-| `jv.adjudicate(review, item_id, verdict, *, evidence=(), note=None)` / `jv.review_status(review)` | Confirm/overturn only with snapshot-bound source citations; unresolved is not action eligibility. |
+| `jv.review_queue(path, manifest, items, *, Q, policy, root=None, rows=None) -> summary` | Create or reopen the durable review at `path`. Items are `{id: {"unit", "claim", optional "question"}}`; model fields come only from `rows` (the run judging this `Q` and manifest). A different plan at an existing path is refused. |
+| `jv.review_items(path, *, Q, root=None) -> [item]` | Every item with frozen excerpt, model fields, fingerprint, view, verdict, stale reason and history. |
+| `jv.review_questions(path, *, Q, root=None, limit=5) -> {questions, bindings, open, stale}` | Ask-compatible questions (pending before unresolved) with bindings to echo. Rubric or policy drift raises `ReviewRefused`. |
+| `jv.adjudicate(path, decisions, *, Q, reviewer, root=None) -> {batch, applied, review}` | Atomic batch of `{item, fingerprint, view, verdict, evidence?, note?}`; reviewer `{"kind": "human" \| "agent", "id"}` is self-declared. Any refusal raises `jv.ReviewRefused` (`.problems`) and records nothing. |
+| `jv.review_status(path, *, Q, root=None) -> summary` | Lists `pending`, `unresolved`, `confirmed`, `overturned`, `stale` (every drift reason), `approved_units`, plus `complete`, `settled` and `grants_authority: false`. |
 | `jv.jev_tokens(text, *, timeout=20) -> int \| None` | One `omp toks --json` count, or `None` on any failure. |
 | `jv.hunk_states(units, *, siblings=6, users=3, width=700, cap=None)` | Hunk plus nearest same-file hunks and selected name users. |
 | `jv.group(units, *, by, k=8, render=None, shared=None, cap=None) -> (states, grouping)` | Shared states, at most `k` units each, and full original/slot/exclusion manifest. |
@@ -308,7 +311,7 @@ collisions gain `#2`, `#3`, and so on.
 | `await jv.run(states, Q, *, intent, concurrency=32, retries=1, timeout=1800, grouping=None, receipt_path=None, bundle_path=None, extraction=None, preflight=False) -> rows` | Bound receipts; optional durable checkpoints, source binding and full-request preflight. |
 | `await jv.resume(bundle_path, *, intent, concurrency=32, retries=1, timeout=1800, resubmit_missing=False, receipt_path=None) -> rows` | Reconcile journal and surviving host items. Resubmission requires opt-in; stale batches remain incomplete. |
 | `jv.slot_questions(Q, k) -> dict` | Copy questions to `qid@sN`; absent slots are discarded by `jv.run`. |
-| `jv.flag(rows, rule=None) -> list[row]` | Copy errors, incomplete coverage, explicit fallback routes, unknown provenance, and truthy rule matches with `why`; empty rows without a complete bound receipt raise. Error rows skip the rule. |
+| `jv.flag(rows, rule=None, *, report=None) -> list[row]` | Copy errors, incomplete coverage, explicit fallback routes, unknown provenance, and truthy rule matches with `why`; empty rows without a complete bound receipt raise. Error rows skip the rule. `report` is the dict `jv.states`/`jv.group` filled: a row whose id (or group state id) was truncated, oversize or unmeasured there is also flagged `truncated`, `oversize` or `unmeasured`. Without a report no truncation is inferred. |
 | `jv.show(rows_or_ids, states, *, fields=None, width=1200, limit=30)` | Print selected fields and truncated state text. |
 | `jv.tally(rows, key, *, edges=None, levels=None) -> dict` | Count labels or bin numbers, excluding errors. Supply `levels=N` for score indices; default probability bins reject out-of-range values. |
 | `jv.calibrate(rows, states, Q, *, qid, label, agree=None, per_bin=20, edges=None, model="slow", rubric="", seed=None) -> dict` | Choice, bool (`yes`/`no`), or score-level agreement. Grouped rows retain shared/slot context. Records sample/context identities and unknown spending; not source truth. |
@@ -317,8 +320,25 @@ collisions gain `#2`, `#3`, and so on.
 | `await jv.sensitivity(states, Q, *, intent, max_variants, permutations=None, contexts=None, ...)` | Explicit bounded order/context variants; report disagreements and unresolved units without voting. |
 | `jv.save(rows, path="/tmp/jevify-rows.jsonl") -> path` | Write a `{"jevify_receipt": ...}` header followed by JSONL rows, preserving empty-run evidence. |
 | `jv.load(path) -> rows` | Read that header and return list-compatible rows with their receipt; headerless legacy JSONL is rejected. |
-| `jv.delete_spans(units, ids, *, root=".", dry_run=True, manifest=None, review=None) -> {file: lines_removed}` | Remove merged inclusive spans. A manifest guards source/unit identity; a review additionally requires completed review and confirmed targets. |
+| `jv.delete_spans(units, ids, *, root=".", dry_run=True, manifest=None, review=None, Q=None) -> {file: lines_removed}` | Remove merged inclusive spans. A manifest guards source/unit identity. A `review` path requires `manifest` and `Q`, and each target must be in the review's `approved_units`. Failures raise before any write, including dry runs. |
 | `jv.report(rows, Q, *, title="jevify") -> str` | Markdown counts, hashes, labels, state summary, and the rows' own bound run receipt; never substitute the latest run. |
+| `jv.adopt(source, states, Q, *, intent=None, grouping=None, batch=None) -> rows` | Bind output of the built-in `judge_batch()` (a host batch read without draining, a `{key: item or answers}` mapping, or `drain()` pairs) to the submitted states as receipt-bound rows, so `flag`, policy rules, review and `report` apply. Every state needs a result (a missing one becomes an error row); a key outside `states` is refused. Answers-only sources have an unknown served model. `batch=` (with drained items only; a batch source plus `batch=` raises `ValueError`) is the host batch or its `status()` dict: the receipt keeps batch ID, cost estimate and host done/total while drained items keep their served model. Billing stays `estimate_unverified`. |
+| `jv.scalar(value, qid=None)` | One answer as a plain value: choice → label, bool → P(yes), score → weighted level index. `value` is a jv row plus `qid`, a host answer mapping, or a host answers mapping/item plus `qid`; otherwise `ValueError`. |
+| `jv.pilot_check(rows, Q, *, rule=None, max_flag_rate=0.4, max_band_rate=0.4, catchall=(), max_catchall_rate=0.4, min_units=10) -> dict` | Decide from a pilot whether a full sweep is worth running. `rule` is the frozen `jv.policy_rule`, else `flag` defaults. `provenance_unknown` is excluded from the flag rate (counted in `provenance_only`). Rates: `flag_rate`, `band_rate` (choice top probability or bool P(yes) in 0.3–0.7), and `catchall` (`{qid: [labels]}` share). Any rate above its max → `use_direct`; fewer than `min_units` answered → `too_small`; else `proceed`. Returns `{verdict, units, answered, flagged, provenance_only, flag_rate, band, band_rate, catchall, errors, reasons}`. `proceed` is not a quality claim. |
+| `jv.remaining(states, prior_rows, Q) -> (todo_states, reused_rows)` | Reuse pilot verdicts: a prior row is reused only if it has no error, is not grouped, has `qhash == jv.qhash(Q)` and `state_sha256 == jv.state_digest(state)`. Anything else is judged again. Combining reused rows with a later run is a splice and must be reported as one. |
+| `jv.gate(baseline_rows, current_rows, Q, *, qid, margin=0.15, rejudge_rows=None) -> dict` | Regression gate between two sweeps of one rubric. Lists `regressions`, `noise`, `unconfirmed`, `unknown` (and unchanged/source-changed ids). A changed verdict is a regression only when digests differ and a rejudge of the current state repeats it. A differing `qhash` raises `ValueError`. |
+| `jv.power(*, rate=0.5, margin=0.1, confidence=0.95) -> int` | Units needed to estimate a proportion within ±`margin` (normal approximation; `confidence` one of 0.9, 0.95, 0.99). |
+| `jv.ledger(path)` / `jv.Ledger(path)` | Append-only JSONL ledger of unit use. `record(ids, purpose=..., labeler=None, labeler_kind=None)` with purpose `tune`, `heldout` or `gold` (`labeler_kind` `human`, `agent`, `script` or `external`, required for gold); recording a `tune` id as `heldout` raises and records nothing. `independent_gold()` separates human/external labels from agent/script-only ones. |
+| `jv.facts(units, checks, *, settle=None, requires=None) -> (states, settled_rows, report)` | Attach deterministic facts (`checks={name: fn(unit)}`) and settle by rule what the facts already decide (`settle(facts)` returns None or `{column: value}`; settled rows carry `settled_by: "rule"`). A raising check or rule is recorded in `report["check_errors"]`/`["settle_errors"]` and the unit is still judged. `requires={qid: [names]}` lists judged units lacking a needed fact or field in `report["missing"]` and warns. No judge call. |
+| `jv.units_from_table(text, *, key=None) -> {id: {column: value}}` | Parse the first GitHub Markdown table; splits on unescaped `\|` only; ragged rows, empty or duplicate keys, a second table and elided input raise. |
+| `jv.refuse_elided(text, *, source="input") -> text` | Raise `ValueError` naming the first OMP read elision marker in `jv.ELISION_MARKERS` (`[… N ln elided`, `re-read needed ranges`, `… N more`, `[Some lines truncated to`, `Use artifact://`); otherwise return `text`. |
+| `jv.state_digest(state) -> str` | SHA-256 hex of the canonical JSON of a state; binds a row to its input as `row["state_sha256"]`. |
+| `jv.splice(base_rows, patch_rows) -> rows` | Replace base rows by id with re-judged patch rows. Both need run receipts and no duplicate ids. The receipt says `assembly: "spliced"`, lists `parts` and `replaced_ids`; it is never a single full sweep, and is complete only if every id is answered and neither part had coverage errors. |
+| `jv.comparable(rows_a, rows_b) -> {comparable, reasons}` | True only for the same `qhash` and one identical known served model; rows with no served model are not comparable. |
+| `jv.export(rows, path=None, *, Q, review=None, rule_flags=None, format="md") -> str` | One table (`md`) or JSONL record per row: `judge_flag` from `jv.flag`, `rule_flags` (the caller's own `{id: reason(s)}`, never merged), `review_status` (unreviewed unless a durable `review` path is given), `assembly`, `judged_at`, `state_sha256` prefix. Writes when `path` is given. |
+| `jv.receipt_md(rows) -> str` | Markdown block stating what the rows' receipt supports and what it does not (units, answered, errors, served models, cost). Without a receipt it says coverage, models and cost are unknown. |
+
+Run rows gain `state_sha256`, `judged_at` and `assembly` (`single`, or `spliced-patch` for patch rows in a splice). Run and adopt receipts gain `served_models` (counts per served model), `served_unknown`, `comparable` (one known served model), `host_counts` (`answered`, `planned`, `host_done`, `host_total`, `reconciled`; host values are `None` when unobserved), `billing` (`estimate_unverified`) and `assembly`.
 
 `git_units` disables color and external diff, enables rename detection, and places
 paths after `--`. A file unit is `{file,status,diff}`. A hunk ID is
@@ -402,17 +422,26 @@ counts as independent requests.
 
 ### Route and cache provenance
 
-**Capability boundary (2026-10-09):** stock OMP **18.8.7** (`f261ed9faf16b61880b544f599876bface4ded0d`)
-exposes `JudgmentItem` key, answers, error, and model, but not the route/cache/count
-fields below. The checked-in helper reads those proposed attributes defensively;
-on stock, missing metadata remains `None` and successful rows are flagged
+**Live audit (2026-10-21, OMP 18.12.5):** drained judge items expose only `key`, `ok`,
+`error`, `answers` and `model`; `batch.status()` returns `id`, `intent`, `total`, `done`,
+`failed`, `cost`, `running`, `model` and `elapsedS`. There are no selected/primary model,
+fallback or cache fields, so `provenance_unknown` stays true and `jv.flag` still adds it
+to every row. Fresh answers report a versioned served model (for example
+`openrouter/typesafe/jev-1.14-20261014`); repeat judgments answered from cache reported
+the alias `openrouter/~typesafe/jev-latest` with cost 0. The helper cannot prove that the
+alias is the same model, so `comparable` is False across cached and fresh rows.
+`jev-latest` moved from 1.13 to 1.14 during this work. Measured route limits on jev-1.13:
+about 32.7k input tokens and 255 labels.
+
+**Historical capability boundary (2026-10-09):** the audited stock OMP **18.8.7**
+(`f261ed9faf16b61880b544f599876bface4ded0d`) exposed the same key/answers/error/model
+items (also seen through 18.9.1). The checked-in helper reads route/cache attributes
+defensively; on stock, missing metadata remains `None` and successful rows are flagged
 `provenance_unknown`. Model aliases, frequencies, zero batch cost, or internal host
-telemetry do not fill that gap. The metadata-rich contract below belongs to the
-**local upstream companion patch** on `fix/jevify-current-surface` in
-`../oh-my-pi.jevify-current`, not a released, published, installed or deployed OMP
-capability. Legacy cache origins may still be unknown with that patch. Source
-contracts are not live-host proof. Direct `await judge(...)` remains answers-only;
-these fields belong to batch drain items, with no `metadata()` method.
+telemetry do not fill that gap. The metadata-rich contract below is a **proposed**
+contract that no audited stock host provides; source contracts are not live-host
+proof. Direct `await judge(...)` remains answers-only; these fields would belong to
+batch drain items, with no `metadata()` method.
 
 `selected_model` identifies the routing candidate, while `response_model` is the
 raw response identity. An alias candidate can return a concrete model name without
@@ -528,8 +557,7 @@ unavailable cost and coverage as unknown. Deduplicate by entry `id` within its
 invocation, not across retries; outer assistant usage stays on transcript messages
 and grading overhead stays separate and unmeasured at the session-total level.
 
-The current companion metadata patch does not establish a custom usage-summary
-dependency. The eval runner reads the stock persisted ledger after settlement;
+No custom usage-summary dependency is established. The eval runner reads the stock persisted ledger after settlement;
 helper receipts remain model-printable batch estimates, not independent host
 accounting. Its `snapshot_statuses` and `collection_status` describe collection,
 not billing completeness. Completion, auxiliary and total buckets keep unknown
@@ -597,18 +625,76 @@ plan = jv.plan(states, Q)
 assert plan["admissible"], plan
 ```
 
+Helper defaults stay `total_budget=64_000` and `single_budget=32_000`. Route-specific
+guidance: a measured OptChat OpenRouter Jev route totalled about 32.7k tokens, so for that
+route only, pass the conservative budgets explicitly:
+
+```python
+plan = jv.plan(states, Q, total_budget=32_000, single_budget=32_000)
+```
+
+This is not a universal limit for other hosts or routes. Re-measure the route before reusing
+these numbers.
+
 `source_hits` is an independently collected list of `{"file": relative_path, "line": N}`
 sites. The manifest maps each site into unit spans; matching counts alone do not
 establish coverage. Preserve filter/drop/truncation reasons. A supplied revision label is metadata;
 file content hashes bind the actual snapshot. Validation reports source drift separately
 from coverage. Do not turn a missing or changed file into an empty clean extraction.
 
-A review queue freezes a serializable domain policy alongside the extraction digest.
-Confirmed and overturned decisions require exact file/line/quote evidence from that
-snapshot; unresolved records remain explicit. Retain the review history. Source review
-does not repair missing host provenance, grant edit authority, or rewrite a model receipt.
-For authorized deletions, pass both `manifest` and `review` to `delete_spans`; it checks
-all source/unit bindings and review eligibility before any write. Re-extract after edits.
+The review inbox is path-based. `jv.review_queue(path, manifest, items, *, Q, policy,
+rows=None)` freezes the policy and the extraction digest, and it freezes each item's
+unit excerpt, claim, and optional question. When `rows` is a run that judged `Q` and
+this manifest, the item's model verdict, uncertainty and model are copied from that row.
+Caller-supplied model fields are refused, and error rows are refused. Without `rows`,
+those fields are unknown. Calling `review_queue` again at the same path with an identical
+plan reopens it; a different plan is refused.
+
+```python
+policy = jv.policy(Q, {"verdict": {"top": 0.7, "margin": 0.2}})
+REVIEW = "/tmp/jevify-review"
+jv.review_queue(REVIEW, manifest, {"c1": {"unit": "u07", "claim": "handler drops the retry error",
+                                          "question": "verdict"}},
+                Q=Q, policy=policy, rows=rows)
+asked = jv.review_questions(REVIEW, Q=Q, limit=5)   # ask-compatible; keep asked["bindings"]
+b = asked["bindings"]["c1"]
+try:
+    jv.adjudicate(REVIEW, [{"item": "c1", "fingerprint": b["fingerprint"], "view": b["view"],
+                            "verdict": "confirmed", "evidence": [b["citation"]]}],
+                  Q=Q, reviewer={"kind": "human", "id": "maintainer"})
+except jv.ReviewRefused as refused:
+    print(refused.problems)                          # nothing was recorded
+status = jv.review_status(REVIEW, Q=Q)
+assert status["grants_authority"] is False
+```
+
+Each decision must echo the item's `fingerprint` and current `view`. `confirmed` and
+`overturned` must cite `{"file", "start", "end"}` inside the frozen snapshot; `unresolved`
+may cite nothing. Reviewer kinds are self-declared, and an agent cannot replace a human's
+latest decision (`protected_decision`).
+
+Status fields are `pending` and `unresolved` (listed separately), `confirmed`, `overturned`,
+`stale` (every item with a drift reason, whatever its verdict), `drift` (rubric, policy,
+changed files), `complete` (no pending or unresolved items), `approved_units` (every item
+confirmed and not stale), `settled` (complete, no stale, no drift), and `grants_authority`
+(always `False`). A changed frozen file keeps `settled` false. `stale_source` items cannot
+be decided again. `stale_evidence` means the latest decision cites a changed file: that
+decision no longer counts, and the item can be decided again. Source review does not repair
+missing host provenance, grant edit authority, or rewrite a model receipt.
+
+For a deletion, dry-run first and then pass the same arguments with `dry_run=False` only with
+explicit deletion authority:
+
+```python
+jv.delete_spans(units, ["u07"], root=REPO, dry_run=True, manifest=manifest, review=REVIEW, Q=Q)
+```
+
+`review` requires `manifest` and `Q`. The guard checks the source snapshot, unit content,
+the review's manifest digest, and rubric/policy/source drift. It also requires no pending or
+unresolved items and approval for each target. Re-extract after edits.
+
+The status key `authorized` and the in-memory review dict form are removed and are not
+aliased. `jv.adjudicate` takes a batch of decisions, not `(review, item_id, verdict)`.
 
 ### Primitive policies and sensitivity pilots
 
@@ -648,19 +734,42 @@ different plugin identities alone do not prove distinct provider requests.
 
 ### Host keyword notice and plugin policy
 
-Stock OMP through 18.9.1's injected `jevify` keyword notice still mandates Jev for roughly
-20 homogeneous items and limits direct inspection. That conflicts with this
-plugin's method-first suitability guidance: list length and loading a skill do
-not themselves justify judging. Installing or updating this plugin does **not**
-replace the host-injected notice.
+OMP 18.12.5 injects a `jevify-notice` on the keyword "jevify" telling agents to call the
+built-in `judge_batch()` for any list of about 20 or more items; it never mentions
+`jv.*`. In 4 of 4 recent real sessions agents followed it and never used the helper, and
+in 3 of those 4 a direct script did the real work. The audited 18.8.7–18.9.1 notice
+likewise mandated Jev for roughly 20 homogeneous items (historical). That conflicts with
+this plugin's method-first guidance: list length and loading a skill do not themselves
+justify judging. Installing or updating this plugin does **not** replace the host notice.
 
-The separate local upstream companion patch aligns the notice with method-first
-selection: Jev is optional, no minimum item count mandates it, necessary source
-and context gathering is allowed, and pilots apply to read-only judging too.
-Frozen rubrics, complete declared coverage, source confirmation and action
-authority still matter. This describes a local source change, not a released or
-deployed host feature. The older API-example bug (`wait([judge(...)])`) was fixed
-in upstream 18.4.10; the policy conflict survived that API correction.
+Coexist with it instead: choose the method first, and when `judge_batch()` already ran,
+bind its output with `jv.adopt(..., batch=b)`. Frozen rubrics, complete declared
+coverage, source confirmation and action authority still matter. The older API-example
+bug (`wait([judge(...)])`) was fixed in upstream 18.4.10.
+
+#### Recipe: host-notice run, adopt, pilot check, review and export
+
+```python
+%load skill://jevify/jevify.py
+```
+
+(That `%load` must be a cell of its own; combined with other code it fails.) Then, in a
+following cell, after freezing `Q` and building `states`:
+
+```python
+b = judge_batch(states, Q, intent="jevify pilot")
+items = []
+while len(items) < b.total:
+    items += await b.drain(timeout=30)
+rows = jv.adopt(items, states, Q, batch=b)
+print(jv.pilot_check(rows, Q, rule=rule, catchall={"verdict": ["other"]}))
+flagged = jv.flag(rows, rule, report=report)   # read these sources yourself
+print(jv.export(rows, Q=Q, rule_flags=my_script_findings))
+```
+
+A `use_direct` verdict means stop and use direct reading or a script. Review decisions
+go through `jv.review_queue`/`jv.adjudicate`; pass the durable review path to
+`jv.export(review=...)`.
 
 ## Dated observations and historical notes
 
@@ -675,7 +784,7 @@ Prefer a deterministic method when a rule decides the question.
 The 2026-10-09 stock-18.8.7 audit observed two expected typed results in each of a
 flat, exact-repeat, and grouped smoke. The repeat reported zero batch cost estimate;
 all successful rows had unknown provenance. This establishes only that those
-bounded calls worked, not quality, billing, companion-patch support, or deployment.
+bounded calls worked, not quality, billing, or deployment.
 
 The following interface notes are historical observations from 2026-09-27 on omp
 18.3.4 and typesafe/jev-1.13.0. They are not current API, notice, token, fallback,

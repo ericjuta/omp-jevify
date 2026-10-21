@@ -1,6 +1,6 @@
 ---
 name: jevify
-description: "Assess suitability when explicitly asked to use Jev/jevify, or for repeated independent semantic classifications that deterministic tools cannot decide. Choose a method first; neither item count nor loading this skill requires judgment. Not for summaries, counts or plain edits."
+description: "Assess suitability when the user says jevify or asks to use Jev, when the host jevify notice fires, or for repeated independent semantic classifications that deterministic tools cannot decide. Choose a method first; neither item count, the host notice nor loading this skill requires judgment. Not for summaries, counts or plain edits."
 metadata:
   version: 0.3.1
 ---
@@ -18,11 +18,27 @@ when deterministic tools or direct reading answer the actual question more relia
 - Consider Jev for repeated, independently judgeable semantic decisions with the
   necessary shared context. Repetition or list length alone is not a reason to use it.
 - Loading this skill or its helper does not require a judge call. If choosing Jev,
-  pilot before relying on results, including for read-only answers.
+  pilot before relying on results, including for read-only answers. A pilot may also
+  show that a direct method is the better choice.
 
-Optional Python helper: `%load skill://jevify/jevify.py`.
+Optional Python helper, loaded in an `eval` cell of its own (combining `%load` with
+other code in one cell fails):
+
+```python
+%load skill://jevify/jevify.py
+```
+
 Read [the on-demand reference](skill://jevify/reference.md) only for needed helper
 APIs, extraction details or existing recipes; it is not a second mandatory workflow.
+
+## With the host notice
+
+OMP 18.12.5's `jevify-notice` fires on the word "jevify" and directs bulk work to the
+built-in `judge_batch()` for about 20 or more items; it never mentions `jv.*`. Its item
+count is not a reason to use Jev: choose the method above first. If `judge_batch()`
+already ran, bind its output with `jv.adopt(items, states, Q, batch=b)` (drained items
+keep their served model; `batch=` adds batch ID, cost estimate and host counts), then
+continue with `jv.flag`, `jv.pilot_check`, review and `jv.export`.
 
 ## If choosing Jev
 
@@ -38,9 +54,16 @@ APIs, extraction details or existing recipes; it is not a second mandatory workf
    consumers; sanitize logs and never submit credentials or keys.
    `jv.plan` checks full-request budgets; `jv.pack` groups without silent truncation.
    Bind source hashes and exclusions with `jv.extraction` before relying on coverage.
+   Settle script-decidable fields with `jv.facts` (`requires=` warns when a unit lacks
+   what a question asks about). Refuse elided reads (`jv.refuse_elided`,
+   `jv.units_from_table`); pass the `jv.states` report to `jv.flag(rows, report=...)` so
+   truncated or oversize units are flagged.
 3. Pilot the chosen representation. Read flagged sources and near misses, compare
    verdicts with evidence, and repair misread wording or missing context. Rejudge the
-   pilot after changes; abandon Jev if the judgments remain unsuitable.
+   pilot after changes; abandon Jev if the judgments remain unsuitable. Run
+   `jv.pilot_check(rows, Q, rule=...)` with the frozen rule: `use_direct` (flag rate,
+   uncertainty band or catch-all share above about 40%) means stop and read directly or
+   script it. `jv.remaining` reuses unchanged pilot verdicts in the sweep.
 4. Freeze the rubric/questions and preserve their hash for full and after-action
    runs. A post-freeze wording change invalidates prior verdicts: re-freeze and
    rejudge the affected declared sweep, not just the flags.
@@ -55,14 +78,25 @@ APIs, extraction details or existing recipes; it is not a second mandatory workf
    loss. Recovery reconciles saved items and a surviving host batch; stale or missing
    batches remain unresolved unless resubmission is explicitly requested. This is
    not exactly-once execution; see the reference for crash and host-session limits.
+7. A `jv.splice` of re-judged rows into an earlier run is never a full sweep; report it as
+   spliced. Compare sweeps with `jv.gate`, which separates regressions from judge noise.
 
 ## Confirm before action
 
 - Read every flagged source in full, not just a truncated render or score; confirm
   or overturn the claim from reachable behavior and the governing contract.
   Escalate uncertainty, near-threshold ambiguity, errors, explicit fallback rows
-  and unknown provenance. Stock OMP through 18.9.1 does not expose the route/cache fields
-  needed to resolve provenance; a familiar model label is not a substitute.
+  and unknown provenance. Stock OMP (audited 18.8.7–18.9.1 and 18.12.5) exposes only a
+  served `model` per item and model/cost in `status()`, no selected/primary, fallback or
+  cache fields, so `provenance_unknown` stays true on every row. Cached repeats report the
+  alias `~typesafe/jev-latest`, fresh answers a versioned model, so such rows are not
+  `comparable`; a familiar model label is not a substitute for provenance.
+- Record source-bound confirm, overturn or unresolved decisions in the review inbox
+  (`jv.review_queue`, `jv.review_questions`, `jv.adjudicate`, `jv.review_status`), using a
+  durable review path. `approved_units` lists units whose items are all confirmed and
+  not stale; deletion additionally requires a `settled` review. The status always
+  reports `grants_authority: false`.
+  Stale approvals are reported under `stale`; decide them again rather than carrying them forward.
 - Calibrate before bulk edits or destructive action; read-only calibration is
   optional. Model agreement is an estimate, not source confirmation or authority.
   Poor agreement calls for revisiting the pilot/context, not relaxing thresholds.
@@ -70,9 +104,10 @@ APIs, extraction details or existing recipes; it is not a second mandatory workf
   Pilot grouped judgments separately; calibrate them separately before bulk or
   destructive action. Do not mix grouped and flat rows in one decision.
 - Act only on confirmed items within granted authority. Review authority is not
-  deletion authority. Dry-run deletable spans, preserve dirty/unrelated work, and
-  use LSP references for exported-symbol refactors. Delegate exact confirmed IDs
-  for edits rather than asking editors to rediscover candidates.
+  deletion authority. For deletion, call `jv.delete_spans` with the manifest, the review
+  path and `Q`, dry-run first, and inspect the printed spans. Preserve dirty/unrelated
+  work, and use LSP references for exported-symbol refactors. Delegate exact confirmed
+  IDs for edits rather than asking editors to rediscover candidates.
 - After edits, re-extract and remap coverage, then rejudge with the same frozen
   questions. Unresolved flags/errors/unknowns or uncovered hits prevent a clean
   closure claim. Receipt completeness is independent of row flags and source
@@ -82,7 +117,8 @@ APIs, extraction details or existing recipes; it is not a second mandatory workf
 
 Report the chosen method and declared scope; extracted/covered, dropped/truncated,
 piloted/judged and manually reviewed counts; errors, models/fallbacks, flags,
-calibration if performed, receipt completeness, and changed/remaining items.
+calibration if performed, receipt completeness, review status (pending, unresolved,
+stale, settled) if an inbox was used, and changed/remaining items.
 Separate judge estimates from source-confirmed conclusions. Say when the result is
 pilot-tuned or sampled, not a full read; do not claim complete coverage or successful
 action without evidence.
