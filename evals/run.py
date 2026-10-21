@@ -13,8 +13,9 @@ Arms, each set through a one-shot `--config` overlay for that process only:
   none   bare and every namespaced jevify skill are ignored via skills.ignoredSkills.
 
 Strategies:
-  auto           the case goal is unchanged.
+  auto           the case goal, with no method instruction.
   direct-script  compute or inspect directly; no task-driven judge/completion.
+  direct-reading read the relevant source and reason from it; no scripts, judge or completion.
   jev-flat       one flat Jevify judgment per planned unit with the prescribed settings.
   jev-grouped    grouped Jevify judgments with the prescribed settings.
 
@@ -33,6 +34,7 @@ Authorized envelope (optional; each limit is checked before an attempt starts):
   --authorize-questions N     stop scheduling once observed known judgment questions reach N
   --authorize-concurrency N   simultaneous attempts (the smaller of N and --jobs)
   --thresholds FILE           predeclared decision rule; its canonical digest binds the run
+  --pilot FILE                predeclared jevify-pilot/1 manifest binding cases, keys, rubric, phase and gold attestation
 No dollar envelope exists: dollar totals stay unknown or catalog-estimated, with no hard guarantee.
 
 Needs a working `omp` with model access. Results vary run to run; use --reps >= 3.
@@ -65,6 +67,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 import fixture  # noqa: E402
+import findings  # noqa: E402
 
 TOOLS = "read,eval,grep,glob,bash,find,edit,write"
 SESSION_FLAGS = ("--no-extensions", "--no-rules", "--no-lsp", "--no-title")
@@ -72,8 +75,12 @@ SESSION_FLAGS = ("--no-extensions", "--no-rules", "--no-lsp", "--no-title")
 TASK_PURPOSES = {"judge": "judgment", "judge_batch": "judgment", "eval_completion": "completion"}
 LIVE = set()  # running omp sessions, reaped if the runner is interrupted
 SOURCE_MARKERS = ("judge_batch", "jv.run(", "judge(", "completion(")
-STRATEGIES = ("auto", "direct-script", "jev-flat", "jev-grouped")
+STRATEGIES = ("auto", "direct-script", "direct-reading", "jev-flat", "jev-grouped")
+DIRECT_STRATEGIES = ("direct-script", "direct-reading")
 JEV_STRATEGIES = ("jev-flat", "jev-grouped")
+# Candidate strategies a pilot may recommend, and the method outcome each one supports.
+METHOD_OUTCOMES = {"direct-script": "use_direct_script", "direct-reading": "use_direct_reading",
+                   "jev-flat": "use_jev", "jev-grouped": "use_jev"}
 CACHE_MODES = ("cold", "warm", "uncontrolled")
 SNAPSHOT_STATES = ("complete", "incomplete", "absent")
 HELPER_CONCURRENCY = 4
@@ -89,7 +96,7 @@ TOKEN_FIELDS = {
     "cache_read": ("cache_read", "cacheRead", "cached_tokens"),
     "cache_write": ("cache_write", "cacheWrite"),
 }
-RESULT_SCHEMA = 5
+RESULT_SCHEMA = 6
 CONTROL_KINDS = ("answer_integer", "repo_rename")
 CONFIDENCE = 0.95
 # Two-sided 95% Student t critical values by degrees of freedom; beyond 30 the normal value 1.96 is used.
@@ -97,14 +104,14 @@ T_CRITICAL_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7:
                  9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120,
                  17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064,
                  25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
-RUNNER_MODULES = ("run.py", "fixture.py", "refund_retry_fixture.py")
+RUNNER_MODULES = ("run.py", "fixture.py", "refund_retry_fixture.py", "findings.py")
 METHOD_SETTINGS = {"helper_concurrency": HELPER_CONCURRENCY, "backend_retries": BACKEND_RETRIES,
                    "shared_deadline_seconds": SHARED_DEADLINE_SECONDS, "grouped_k": GROUPED_K,
                    "evidence_class": "prescribed_method_settings_not_execution_proof"}
 # Fields a one-variable comparison must hold fixed; treatment fields are the only ones allowed to differ.
 CONTRACT_CONTROLLED = ("runner", "source", "executable", "host", "model_requested", "thinking_requested",
                        "cases", "fixtures", "cache", "method_settings", "limits", "session_flags", "tools",
-                       "envelope", "predeclared_thresholds")
+                       "envelope", "predeclared_thresholds", "pilot")
 # skill folds the arm and its bundle into one field, so skill vs none is a single treatment difference.
 CONTRACT_TREATMENT = ("skill", "strategy")
 THRESHOLD_ROLES = ("correctness", "coverage", "unsafe")
@@ -386,12 +393,15 @@ def fixture_identity(case):
         for path in sorted(p for p in repo.rglob("*") if p.is_file() and ".git" not in p.parts):
             files[str(path.relative_to(repo))] = digest_bytes(path.read_bytes())
         keys = fixture.answer_keys(repo, dataset=dataset)
+        contract_text = findings.output_contract(repo)
     return {
         "dataset": dataset,
         "scale": case.get("scale", 1),
         "key": case.get("key"),
         "fixture_sha256": digest_json(files),
         "private_keys_sha256": digest_json(keys),
+        "key_sha256": None if case.get("key") is None else digest_json(keys[case["key"]]),
+        "output_contract_sha256": findings.contract_digest(contract_text),
         "public_rubric_sha256": files.get(str(PUBLIC_RUBRIC_REL)),
         "file_count": len(files),
     }
@@ -424,10 +434,13 @@ def public_rubric_obligation(repo):
 def strategy_prompt(case, repo, strategy):
     goal = case["prompt"].rstrip()
     if strategy == "auto":
-        return goal
-    if strategy == "direct-script":
+        method = ""
+    elif strategy == "direct-script":
         method = (" Use direct inspection, deterministic tools, or an ordinary script. "
                   "Do not call judge, judge_batch, completion, or the Jevify helper.")
+    elif strategy == "direct-reading":
+        method = (" Read the relevant source directly and reason from what you read. Do not write or run scripts "
+                  "to decide the answer. Do not call judge, judge_batch, completion, or the Jevify helper.")
     elif strategy == "jev-flat":
         method = (f" Use the Jevify helper for one flat judgment batch: concurrency={HELPER_CONCURRENCY}, "
                   f"backend retries={BACKEND_RETRIES}, and a shared deadline of {SHARED_DEADLINE_SECONDS} seconds. "
@@ -445,7 +458,8 @@ def strategy_prompt(case, repo, strategy):
                   "the helper retains group/slot/shared context. Manually resolve flags and exclusions.")
     else:
         raise ValueError(f"unknown strategy {strategy!r}")
-    return goal + method + public_rubric_obligation(repo)
+    suffix = findings.output_contract(repo).strip()
+    return goal + method + public_rubric_obligation(repo) + (f"\n\n{suffix}" if suffix else "")
 
 
 def freeze_cache_seed(requested_namespace, workdir):
@@ -1048,7 +1062,7 @@ def adherence(strategy, method):
     receipts = method["actual_receipts"]
     judgments = method["task_judgment_ledger_rows"]
     reasons, unverified = [], []
-    if strategy == "direct-script":
+    if strategy in DIRECT_STRATEGIES:
         if judgments or method["task_completion_ledger_rows"]:
             reasons.append("task-driven nested judgment or completion attempt observed")
         if receipts:
@@ -1352,6 +1366,191 @@ def load_thresholds(raw):
     return value, digest_json(value)
 
 
+PILOT_SCHEMA = "jevify-pilot/1"
+PILOT_PHASES = ("development", "heldout")
+PILOT_EXPOSURES = ("unexposed", "tuned", "exposed")
+PILOT_MAX_BYTES = 64 * 1024
+PILOT_MAX_EVIDENCE_BYTES = 1024 * 1024
+PILOT_KEYS = frozenset({"schema", "pilot_id", "phase", "rubric_frozen_at", "frozen_at", "thresholds_sha256",
+                        "comparison", "cases"})
+PILOT_CASE_KEYS = frozenset({"split", "exposure", "key_sha256", "public_rubric_sha256", "gold"})
+PILOT_GOLD_KEYS = frozenset({"establishment", "key_author", "key_sha256", "adjudicator", "adjudicated_at", "evidence"})
+PILOT_GOLD_ESTABLISHMENT = "independent_adjudication"
+PILOT_ADJUDICATOR_KINDS = ("human", "agent", "organization")
+PILOT_ATTESTATION = "operator_attested_unauthenticated"
+PILOT_ABSENT_GOLD = "absent_non_independent"
+PILOT_INDEPENDENT_GOLD = "attested_independent_adjudication"
+# The repository authors the bundled synthetic keys; it can never be named as their independent adjudicator.
+REPOSITORY_AUTHOR = "jevify-repository"
+SEALED_HOLDOUT = HERE / "holdout.json"
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _timestamp(value, where):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        raise ValueError(f"{where} must be a UTC timestamp such as 2026-01-02T03:04:05Z")
+    time.strptime(value, TIMESTAMP_FORMAT)  # rejects impossible dates
+    return value
+
+
+def _sha256_field(value, where):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError(f"{where} must be a lowercase sha256 hex digest")
+    return value
+
+
+def _identity_name(value):
+    return str(value).strip().casefold()
+
+
+def _read_evidence(base_dir, relative, where):
+    """Evidence bytes named relative to the manifest directory; nothing outside that directory is attached."""
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        raise ValueError(f"{where} evidence path must be relative to the manifest directory")
+    root = Path(base_dir).resolve()
+    target = (root / relative).resolve()
+    if root not in target.parents or not target.is_file():
+        raise ValueError(f"{where} evidence must be an existing file inside the manifest directory")
+    if target.stat().st_size > PILOT_MAX_EVIDENCE_BYTES:
+        raise ValueError(f"{where} evidence exceeds {PILOT_MAX_EVIDENCE_BYTES} bytes")
+    return target.read_bytes()
+
+
+def _gold(value, *, where, key_sha, frozen_at, base_dir, forbidden):
+    """Validate one gold attestation. Returns (summary, evidence bytes), evidence None when no gold is declared.
+
+    Every declared identity is an operator attestation: a string cannot authenticate a human adjudicator.
+    """
+    if value is None:
+        return {"status": PILOT_ABSENT_GOLD, "attestation": None}, None
+    if not isinstance(value, dict) or set(value) != PILOT_GOLD_KEYS:
+        raise ValueError(f"{where} gold must be null or exactly {sorted(PILOT_GOLD_KEYS)}")
+    if value["establishment"] != PILOT_GOLD_ESTABLISHMENT:
+        raise ValueError(f"{where} gold establishment must be {PILOT_GOLD_ESTABLISHMENT}")
+    key_author, adjudicator = value["key_author"], value["adjudicator"]
+    if not isinstance(key_author, str) or not key_author.strip():
+        raise ValueError(f"{where} gold needs a non-empty key_author")
+    if not isinstance(adjudicator, dict) or set(adjudicator) != {"kind", "id"} \
+            or adjudicator["kind"] not in PILOT_ADJUDICATOR_KINDS \
+            or not isinstance(adjudicator["id"], str) or not adjudicator["id"].strip():
+        raise ValueError(f"{where} adjudicator needs kind in {PILOT_ADJUDICATOR_KINDS} and a non-empty id")
+    if _identity_name(adjudicator["id"]) in {_identity_name(key_author), _identity_name(REPOSITORY_AUTHOR)}:
+        raise ValueError(f"{where} adjudicator must be independent of the key author and the repository")
+    if _sha256_field(value["key_sha256"], f"{where} gold key_sha256") != key_sha:
+        raise ValueError(f"{where} gold binds a different answer key digest")
+    adjudicated_at = _timestamp(value["adjudicated_at"], f"{where} adjudicated_at")
+    if adjudicated_at > frozen_at:
+        raise ValueError(f"{where} gold was adjudicated after the pilot was frozen")
+    evidence = value["evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != {"path", "sha256"}:
+        raise ValueError(f"{where} evidence needs exactly path and sha256")
+    data = _read_evidence(base_dir, evidence["path"], where)
+    digest = digest_bytes(data)
+    if digest != _sha256_field(evidence["sha256"], f"{where} evidence sha256"):
+        raise ValueError(f"{where} evidence bytes do not match the declared sha256")
+    if digest in forbidden:
+        raise ValueError(f"{where} evidence is a key, rubric, fixture or runner artifact, not separate adjudication")
+    summary = {"status": PILOT_INDEPENDENT_GOLD, "attestation": PILOT_ATTESTATION,
+               "establishment": PILOT_GOLD_ESTABLISHMENT, "key_author": key_author.strip(),
+               "adjudicator": {"kind": adjudicator["kind"], "id": adjudicator["id"].strip()},
+               "adjudicated_at": adjudicated_at, "evidence": {"sha256": digest, "bytes": len(data)}}
+    return summary, data
+
+
+def load_pilot(raw, *, path, selected_ids, identities, thresholds_sha, cases_path, run_started):
+    """Validate a predeclared pilot manifest against the launch before any session starts.
+
+    Returns (record, retained). The record's sha256 is the canonical digest of the manifest content and is the
+    only pilot value a comparison contract controls; paths and run times stay display-only. retained maps
+    snapshot file names to the exact manifest and gold-evidence bytes to write before running.
+    """
+    if len(raw) > PILOT_MAX_BYTES:
+        raise ValueError(f"pilot manifest exceeds {PILOT_MAX_BYTES} bytes")
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("pilot manifest must be a JSON object")
+    if set(value) != PILOT_KEYS:
+        raise ValueError("pilot manifest keys must be exactly the predeclared set; "
+                         f"missing {sorted(PILOT_KEYS - set(value))}, unknown {sorted(set(value) - PILOT_KEYS)}")
+    if value["schema"] != PILOT_SCHEMA:
+        raise ValueError(f"pilot schema must be {PILOT_SCHEMA}")
+    pilot_id = value["pilot_id"]
+    if not isinstance(pilot_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", pilot_id):
+        raise ValueError("pilot_id must be 1-64 letters, digits, dots, underscores or hyphens")
+    phase = value["phase"]
+    if phase not in PILOT_PHASES:
+        raise ValueError(f"pilot phase must be one of {PILOT_PHASES}")
+    rubric_frozen_at = _timestamp(value["rubric_frozen_at"], "pilot rubric_frozen_at")
+    frozen_at = _timestamp(value["frozen_at"], "pilot frozen_at")
+    if frozen_at < rubric_frozen_at:
+        raise ValueError("pilot frozen_at must not precede rubric_frozen_at")
+    if frozen_at >= run_started:
+        raise ValueError("pilot must be frozen before this run starts")
+    declared = value["thresholds_sha256"]
+    if declared is not None:
+        _sha256_field(declared, "pilot thresholds_sha256")
+    if declared != thresholds_sha:
+        raise ValueError("pilot thresholds_sha256 must equal the digest of --thresholds (null when none)")
+    if phase == "heldout" and declared is None:
+        raise ValueError("a held-out pilot needs a predeclared --thresholds rule")
+    comparison = value["comparison"]
+    if not isinstance(comparison, dict) or set(comparison) != {"base", "candidate"} \
+            or comparison["base"] not in STRATEGIES or comparison["candidate"] not in METHOD_OUTCOMES \
+            or comparison["base"] == comparison["candidate"]:
+        raise ValueError("pilot comparison needs distinct base and candidate strategies; candidate must be a method")
+    cases = value["cases"]
+    if not isinstance(cases, dict) or not cases:
+        raise ValueError("pilot cases must be a non-empty object")
+    if set(cases) != set(selected_ids):
+        raise ValueError("pilot cases must equal the selected cases; "
+                         f"missing {sorted(set(selected_ids) - set(cases))}, unknown {sorted(set(cases) - set(selected_ids))}")
+    if phase == "heldout" and Path(cases_path).resolve() == SEALED_HOLDOUT.resolve():
+        raise ValueError("evals/holdout.json is the exposed sealed holdout and cannot be fresh held-out evidence")
+    runner = runner_identity()
+    base_dir = Path(path).resolve().parent
+    summary, retained = {}, {}
+    for cid in sorted(cases):
+        entry, where = cases[cid], f"pilot case {cid!r}"
+        if not isinstance(entry, dict) or set(entry) != PILOT_CASE_KEYS:
+            raise ValueError(f"{where} keys must be exactly {sorted(PILOT_CASE_KEYS)}")
+        if entry["split"] not in PILOT_PHASES:
+            raise ValueError(f"{where} split must be development or heldout")
+        if entry["split"] != phase:
+            raise ValueError(f"{where} is split {entry['split']!r} but the pilot phase is {phase!r}; splits cannot mix")
+        if entry["exposure"] not in PILOT_EXPOSURES:
+            raise ValueError(f"{where} exposure must be one of {PILOT_EXPOSURES}")
+        if phase == "heldout" and entry["exposure"] != "unexposed":
+            raise ValueError(f"{where} is {entry['exposure']}; only unexposed cases are held-out evidence")
+        identity = identities.get(cid) or {}
+        key_sha, rubric_sha = identity.get("key_sha256"), identity.get("public_rubric_sha256")
+        if key_sha is None:
+            raise ValueError(f"{where} has no answer key to bind")
+        if rubric_sha is None:
+            raise ValueError(f"{where} has no public rubric to bind")
+        if _sha256_field(entry["key_sha256"], f"{where} key_sha256") != key_sha:
+            raise ValueError(f"{where} key digest differs from the launch fixture")
+        if _sha256_field(entry["public_rubric_sha256"], f"{where} public_rubric_sha256") != rubric_sha:
+            raise ValueError(f"{where} rubric digest differs from the launch fixture")
+        forbidden = {key_sha, rubric_sha, identity.get("fixture_sha256"), *runner["modules"].values()}
+        gold, evidence = _gold(entry["gold"], where=where, key_sha=key_sha, frozen_at=frozen_at,
+                               base_dir=base_dir, forbidden=forbidden)
+        if evidence is not None:
+            retained[f"pilot-gold-{digest_bytes(evidence)[:12]}.bin"] = evidence
+        summary[cid] = {"split": entry["split"], "exposure": entry["exposure"], "key_sha256": key_sha,
+                        "public_rubric_sha256": rubric_sha, "gold": gold}
+    manifest_sha = digest_bytes(raw)
+    retained[f"pilot-{manifest_sha[:12]}.json"] = raw
+    independent = sum(case["gold"]["status"] == PILOT_INDEPENDENT_GOLD for case in summary.values())
+    record = {"schema": PILOT_SCHEMA, "pilot_id": pilot_id, "phase": phase, "sha256": digest_json(value),
+              "manifest": {"path": str(Path(path).resolve()), "sha256": manifest_sha, "bytes": len(raw)},
+              "rubric_frozen_at": rubric_frozen_at, "frozen_at": frozen_at, "run_started_at": run_started,
+              "thresholds_sha256": declared, "comparison": dict(comparison), "cases": summary,
+              "independence": {"independent_cases": independent, "cases": len(summary),
+                               "all_independent": independent == len(summary)},
+              "attestation": PILOT_ATTESTATION}
+    return record, retained
+
+
 def mean_or_none(values):
     numbers = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
     return round(sum(numbers) / len(numbers), 1) if numbers else None
@@ -1441,6 +1640,11 @@ def threshold_recommendation(metrics, thresholds, contract_check, predeclared):
     return {"verdict": "inconclusive", "reasons": ["intervals do not clear the predeclared rule"]}
 
 
+def _absent_or_changed(base, current, name):
+    """A field missing on either side is a difference; a recorded null on both sides is a match."""
+    return name not in base or name not in current or base[name] != current[name]
+
+
 def contract_differences(base_contract, current_contract):
     """Full controlled-contract comparison; a missing field on either side is a difference, not a match."""
     if not isinstance(base_contract, dict) or not isinstance(base_contract.get("controlled"), dict) \
@@ -1450,16 +1654,16 @@ def contract_differences(base_contract, current_contract):
                 "reason": "baseline predates the recorded comparison contract"}
     now_controlled, now_treatment = current_contract["controlled"], current_contract["treatment"]
     controlled = [name for name in CONTRACT_CONTROLLED
-                  if base_contract["controlled"].get(name) != now_controlled.get(name)]
+                  if _absent_or_changed(base_contract["controlled"], now_controlled, name)]
     treatment = [name for name in CONTRACT_TREATMENT
-                 if base_contract["treatment"].get(name) != now_treatment.get(name)]
+                 if _absent_or_changed(base_contract["treatment"], now_treatment, name)]
     return {"compatible": not controlled, "one_variable": not controlled and len(treatment) == 1,
             "controlled_differences": controlled, "treatment_differences": treatment,
             "unrecorded": [], "reason": None}
 
 
 def comparison_contract(args, *, cases_sha, selected_ids, identities, source, skill, runner, cache_seed,
-                        thresholds_sha, concurrency):
+                        thresholds_sha, concurrency, pilot_sha256=None):
     """What a one-variable comparison must hold fixed, plus the treatment fields allowed to differ."""
     controlled = {
         "runner": runner["sha256"],
@@ -1479,6 +1683,7 @@ def comparison_contract(args, *, cases_sha, selected_ids, identities, source, sk
         "tools": TOOLS.split(","),
         "envelope": {"attempts": args.authorize_attempts, "questions": args.authorize_questions},
         "predeclared_thresholds": thresholds_sha,
+        "pilot": pilot_sha256,
     }
     treatment = {"skill": {"arm": args.arm,
                            "bundle": skill["materialized_sha256"] if args.arm == "skill" else None},
@@ -1833,7 +2038,7 @@ def main():
     ap.add_argument("--arm", choices=("skill", "none"), default="skill",
                     help="skill: pin the skill under test; none: make bare and namespaced jevify unavailable")
     ap.add_argument("--strategy", choices=STRATEGIES, default="auto",
-                    help="auto leaves the goal unchanged; explicit strategies append only method instructions")
+                    help="auto adds no method instruction; every strategy shares the rubric and output contract")
     ap.add_argument("--cache-mode", choices=CACHE_MODES, default="cold",
                     help="cold isolates a fresh DB per attempt; warm clones one frozen SQLite seed per attempt")
     ap.add_argument("--cache-namespace", help="explicit seeded judgment DB for warm mode")
@@ -1854,8 +2059,10 @@ def main():
     ap.add_argument("--preflight", action="store_true",
                     help="print the planned exposure and exit before any session starts")
     ap.add_argument("--thresholds", help="predeclared decision JSON; its canonical digest binds the run")
+    ap.add_argument("--pilot", help="predeclared jevify-pilot/1 manifest binding cases, keys, rubric, phase and gold attestation")
     ap.add_argument("--compare", help="earlier result file to diff against")
     args = ap.parse_args()
+    run_started = time.strftime(TIMESTAMP_FORMAT, time.gmtime())
     for name in ("authorize_attempts", "authorize_questions", "authorize_concurrency"):
         if getattr(args, name) is not None and getattr(args, name) < 1:
             ap.error(f"--{name.replace('_', '-')} must be at least 1")
@@ -1890,6 +2097,11 @@ def main():
         thresholds, thresholds_sha = (None, None)
         if args.thresholds:
             thresholds, thresholds_sha = load_thresholds(Path(args.thresholds).read_bytes())
+        pilot, pilot_blobs = (None, {})
+        if args.pilot:
+            pilot, pilot_blobs = load_pilot(
+                Path(args.pilot).read_bytes(), path=args.pilot, selected_ids=[case["id"] for case in cases],
+                identities=identities, thresholds_sha=thresholds_sha, cases_path=args.cases, run_started=run_started)
     except (RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         ap.error(str(exc))
     selected_ids = [case["id"] for case in cases]
@@ -1899,6 +2111,9 @@ def main():
     if plan["refusals"]:
         ap.error("; ".join(plan["refusals"]))
     print("preflight " + json.dumps(plan, sort_keys=True), flush=True)
+    if pilot is not None:
+        print("pilot " + json.dumps({"pilot_id": pilot["pilot_id"], "phase": pilot["phase"], "sha256": pilot["sha256"]},
+                                    sort_keys=True), flush=True)
     if args.preflight:
         return
     args.envelope = Envelope(attempts=args.authorize_attempts, questions=args.authorize_questions)
@@ -1913,6 +2128,7 @@ def main():
             if not launch_skill["complete"]:
                 raise RuntimeError("skill arm requires SKILL.md and jevify.py")
             cases_snapshot = retain_content(args.raw_dir, f"cases-{digest_bytes(cases_bytes)[:12]}.json", cases_bytes)
+            pilot_retained = {name: str(retain_content(args.raw_dir, name, blob)) for name, blob in pilot_blobs.items()}
             if args.arm == "skill":
                 skills_dir, snapshot_sha = retain_skill_snapshot(source_skills, args.raw_dir)
                 if snapshot_sha != launch_skill["materialized_sha256"]:
@@ -1936,7 +2152,7 @@ def main():
         contract = comparison_contract(args, cases_sha=digest_bytes(cases_bytes), selected_ids=selected_ids,
                                        identities=identities, source=source, skill=skill, runner=runner,
                                        cache_seed=args.cache_seed, thresholds_sha=thresholds_sha,
-                                       concurrency=concurrency)
+                                       concurrency=concurrency, pilot_sha256=None if pilot is None else pilot["sha256"])
         runs, not_scheduled = [], []
         # Each finished run is appended here at once, so a killed runner keeps its evidence.
         partial = Path(args.out + ".partial.jsonl")
@@ -1983,6 +2199,8 @@ def main():
                                "source_sha256_after_runs": skill_after,
                                "source_unchanged_after_runs": skill_after == launch_skill["materialized_sha256"],
                                "directory": skill["directory"]},
+            "pilot": pilot,
+            "pilot_retained": pilot_retained or None,
             "predeclared_thresholds": None if thresholds is None else {
                 "sha256": thresholds_sha, "thresholds": thresholds,
                 "path": str(Path(args.thresholds).resolve())},
@@ -2041,6 +2259,10 @@ def main():
     print(f"arm {result['arm']} · strategy {result['strategy']} · cache {result['cache_mode']} · "
           f"cost {result['cost_ledger']['monetary_status']} · source {source['status']}")
     print(f"executable {result['omp_path']} version={result['omp'] or 'unknown'}")
+    if pilot is not None:
+        independence = pilot["independence"]
+        print(f"pilot {pilot['pilot_id']} phase={pilot['phase']} independent_gold={independence['independent_cases']}"
+              f"/{independence['cases']} attestation={pilot['attestation']}")
     cohorts = summary["cohorts"]
     print(f"cohorts planned={cohorts['planned_runs']} scheduled={cohorts['scheduled_runs']} "
           f"completed={cohorts['completed_runs']} not_scheduled={cohorts['not_scheduled_runs']} · "

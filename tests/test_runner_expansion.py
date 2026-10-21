@@ -447,5 +447,73 @@ class PredeclaredInputTests(unittest.TestCase):
             run.load_thresholds(json.dumps(dict(value, confidence=0.9)).encode())
 
 
+class ControlledFieldFailClosedTests(unittest.TestCase):
+    def test_a_field_missing_on_both_sides_is_still_a_difference(self):
+        base, current = _contract(), _contract()
+        del base["controlled"]["pilot"]
+        del current["controlled"]["pilot"]
+        diff = run.contract_differences(base, current)
+        self.assertIn("pilot", diff["controlled_differences"])
+        self.assertFalse(diff["compatible"])
+
+    def test_a_recorded_null_on_both_sides_is_a_match(self):
+        diff = run.contract_differences(_contract(), _contract())
+        self.assertNotIn("pilot", diff["controlled_differences"])
+        self.assertTrue(diff["compatible"])
+
+    def test_the_pilot_binding_is_a_controlled_field_not_a_treatment(self):
+        changed = _contract()
+        changed["controlled"]["pilot"] = "p" * 64
+        diff = run.contract_differences(_contract(), changed)
+        self.assertEqual(diff["controlled_differences"], ["pilot"])
+        self.assertEqual(diff["treatment_differences"], [])
+
+
+class StrategyPromptTests(unittest.TestCase):
+    GOAL = "Review the change."
+    CONTRACT = "SHARED OUTPUT CONTRACT"
+
+    def _prompts(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(run.findings, "output_contract", return_value=self.CONTRACT):
+            return {strategy: run.strategy_prompt({"prompt": self.GOAL}, Path(tmp), strategy)
+                    for strategy in run.STRATEGIES}
+
+    def test_every_strategy_shares_the_output_contract_suffix(self):
+        prompts = self._prompts()
+        for strategy, prompt in prompts.items():
+            with self.subTest(strategy=strategy):
+                self.assertTrue(prompt.startswith(self.GOAL))
+                self.assertTrue(prompt.endswith(f"\n\n{self.CONTRACT}"))
+        self.assertEqual(prompts["auto"], f"{self.GOAL}\n\n{self.CONTRACT}")
+
+    def test_strategies_differ_only_in_their_method_instruction(self):
+        prompts = self._prompts()
+        suffix = f"\n\n{self.CONTRACT}"
+        methods = {s: prompt[len(self.GOAL):-len(suffix)] for s, prompt in prompts.items()}
+        self.assertEqual(methods["auto"], "")
+        self.assertIn("Do not call judge", methods["direct-reading"])
+        self.assertIn("Do not call judge", methods["direct-script"])
+        self.assertNotEqual(methods["direct-reading"], methods["direct-script"])
+
+    def test_an_empty_output_contract_adds_no_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(run.findings, "output_contract", return_value=""):
+            self.assertEqual(run.strategy_prompt({"prompt": self.GOAL}, Path(tmp), "auto"), self.GOAL)
+
+    def test_findings_module_is_part_of_the_runner_identity(self):
+        self.assertIn("findings.py", run.RUNNER_MODULES)
+
+
+class DirectReadingAdherenceTests(unittest.TestCase):
+    def test_direct_reading_is_judged_like_direct_script(self):
+        accounting = run.finalize_accounting([], [], ["complete"])
+        plan = {"planned_ids": None, "rubric_hash": None}
+        method = run.method_evidence([], [], accounting, plan, "direct-reading")
+        self.assertEqual(run.adherence("direct-reading", method)["status"], "unverified")
+        with_receipt = {**method, "actual_receipts": [{"strategy": "jev-flat"}]}
+        self.assertEqual(run.adherence("direct-reading", with_receipt)["status"], "violation")
+
+
 if __name__ == "__main__":
     unittest.main()

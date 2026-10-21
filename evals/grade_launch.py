@@ -2,7 +2,7 @@
 """Launch one grading pass over frozen inputs under the execution cache contract, then verify it.
 
 judge_batch exists only inside OMP's Python eval kernel, so grading runs there. Before the session
-starts, the launcher reads grade.py, its fixture sources, the results and the cases once each and
+starts, the launcher reads grade.py, its fixture and grader sources (findings.py), the results and the cases once each and
 copies those exact bytes into a private scratch directory. The kernel loads the frozen grader and
 grades only the frozen inputs, so live edits during a launch cannot change what is graded; any
 such edit is reported as a problem. Fixture sources sit beside the frozen grader, so its fixture
@@ -37,7 +37,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import grade as grader_module  # noqa: E402  (FIXTURE_SOURCES only; the kernel loads the frozen copy)
+import grade as grader_module  # noqa: E402  (FIXTURE_SOURCES and GRADER_SOURCES only; the kernel loads the frozen copies)
 import run  # noqa: E402
 
 GRADE = HERE / "grade.py"
@@ -89,7 +89,8 @@ def freeze_inputs(scratch, results, cases):
     directory.mkdir()
     named = {"grader": (GRADE, "grade.py"), "results": (results, f"results{results.suffix}"),
              "cases": (cases, f"cases{cases.suffix}"),
-             **{f"fixture:{name}": (HERE / name, name) for name in grader_module.FIXTURE_SOURCES}}
+             **{f"fixture:{name}": (HERE / name, name) for name in grader_module.FIXTURE_SOURCES},
+             **{f"grader:{name}": (HERE / name, name) for name in grader_module.GRADER_SOURCES}}
     frozen = {}
     for role, (live, name) in named.items():
         data = live.read_bytes()
@@ -153,6 +154,7 @@ def verify_outputs(out, frozen, descriptor):
     identities = graded.get("identities") if isinstance(graded.get("identities"), dict) else {}
     results, cases = frozen["results"], frozen["cases"]
     fixtures = {name: frozen[f"fixture:{name}"]["sha256"] for name in grader_module.FIXTURE_SOURCES}
+    grader_sources = {name: frozen[f"grader:{name}"]["sha256"] for name in grader_module.GRADER_SOURCES}
     problems = []
     if ledger.get("id") != grading.get("ledger_id"):
         problems.append("ledger id does not match the graded output")
@@ -171,6 +173,8 @@ def verify_outputs(out, frozen, descriptor):
         problems.append("graded output's cases digest differs from the frozen cases")
     if identities.get("fixture_sources") != fixtures:
         problems.append("graded output's fixture sources differ from the frozen fixtures")
+    if identities.get("grader_sources") != grader_sources:
+        problems.append("graded output's grader sources differ from the frozen structured-findings module")
     if ledger.get("identities") != identities:
         problems.append("ledger identities differ from the graded output")
     if ledger.get("inputs_changed_during_grading"):
