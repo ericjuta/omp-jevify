@@ -9,24 +9,25 @@ An agent prepares evidence in Python, invokes one optional OMP tool to extract v
 ## Progress
 
 - [x] (2026-11-07) Read the OpenRouter extraction contract and current OptChat precedent.
-- [ ] Resolve [installed artifact bridge](../.scratch/clairic-evidence/issues/02-artifact-bridge.md) and [provider authority](../.scratch/clairic-evidence/issues/03-provider-authority.md).
-- [ ] Implement the optional extension and strict result adapter against the evidence contract.
-- [ ] Prove installed-path loopback behavior, failure retention and cancellation.
+- [x] (2026-11-07) Owner resolved [provider authority](../.scratch/clairic-evidence/issues/03-provider-authority.md): default-on for selected non-secret inputs, explicit opt-out, host credentials, separate experiment approval.
+- [x] (2026-11-07) Implemented the installed Python/extension artifact bridge against the observed OMP SDK.
+- [x] (2026-11-07) Implemented default-on extraction with opt-out, host-only credentials, strict publication/receipt validation and explicit zero-transmission recovery.
+- [x] (2026-11-07) Final adapter suite: 29 tests passed, including distinct same-source record contexts and bounded request refusal. Packaged fresh-process SDK/Python smoke passed against loopback, including four real controller receipt captures; five loopback requests and zero outbound provider requests.
 - [ ] Run a live installed-plugin proof only under separately approved manifest and cap.
 
 ## Context and Orientation
 
-`package.json` ships only `skills`, README and LICENSE; `omp` is currently empty. There is no existing TypeScript extraction extension to extend. Python `jv.run`/`resume` continue to orchestrate finite judgment through the host. Add only the extraction transport here; do not replace the judge or add a Python provider client. [ExecPlan 1](clairic-01-evidence-contracts.md) defines the frozen plan, declared sources and exact occurrence validation.
+At the v0.4.0 baseline, `package.json` shipped only `skills`, README and LICENSE and `omp` was empty; there was no TypeScript extraction extension to extend. Python `jv.run`/`resume` continue to orchestrate finite judgment through the host. Add only the extraction transport here; do not replace the judge or add a Python provider client. [ExecPlan 1](clairic-01-evidence-contracts.md) defines the frozen plan, declared sources and exact occurrence validation.
 
 OptChat's current precedent uses plain fetch to OpenRouter and resolves provider credentials from the OMP host at call time. Its earlier host-extraction-role proposal is superseded. Its API is message/store-specific and is not a reusable public Jevify contract. Read the current SDK and installed-plugin behavior before selecting an extension registration API or dependency pin.
 
 ## Interfaces and Dependencies
 
-Propose `jevify_extract({artifact_root, plan_digest})`, registered by `src/index.ts`, with transport in `src/extract.ts` and artifact validation in `src/evidence-artifacts.ts`. Files do not exist yet. The tool reads only a prepared plan under the admitted root and returns result/receipt references plus counts, never credentials or raw provider errors. The Python helper adopts the result in a later eval cell; do not assume eval exposes a native extraction primitive.
+Implemented `jevify_extract({artifact_root, plan_digest})`, registered by `src/index.ts`, with transport in `src/extract.ts` and artifact validation in `src/evidence-artifacts.ts`. The tool reads only a prepared plan under the admitted root and returns result/receipt references plus counts, never credentials or raw provider errors. The Python helper adopts the result in a later eval cell; do not assume eval exposes a native extraction primitive.
 
 Use adapter-owned endpoint `https://openrouter.ai/api/alpha/extractions` and model `cloudflare/clairic`. Body: `state`, a bounded named `fields` map of `type: text` with frozen instructions and null thresholds, and `provider.options.cloudflare.return_state_text: true`. Do not send `questions`, numeric/derived types, images, arbitrary URLs, or source-selected provider options. Response admission requires an untruncated response, exact `state_text`, the expected answer keys, non-null string values, finite in-range null probabilities meeting policy, valid half-open Unicode code-point spans and exact span/value equality. Missing fields and null values retain explicit dispositions. Never substitute `guess` for null. Python revalidates the result before use.
 
-Initial proposed bounds are a 10-second whole-operation deadline, 262,144 streamed response bytes per request, concurrency 1, no automatic retries, and per-run request/input/field/byte caps frozen in the plan. These are conservative design defaults, not provider limits or user decisions. Refuse missing caps before transmission. Include credential lookup in the deadline. Resolve only the host's `openrouter` credential; the plugin must not read a key env var, flag or config itself. The host may use its own credential cascade only if the owner accepts that policy for this repo.
+Initial proposed bounds are a 10-second whole-operation deadline, 262,144 streamed response bytes per request, concurrency 1, no automatic retries, and per-run request/input/field/byte caps frozen in the plan. These are conservative design defaults, not provider limits or user decisions. Refuse missing caps before transmission. Include credential lookup in the deadline. Resolve only the host's `openrouter` credential; the plugin must not read a key env var, flag or config itself. The owner approved the host's credential cascade, including environment-key fallback. The plugin itself must not introduce an independent credential path.
 
 ## Plan of Work
 
@@ -58,8 +59,10 @@ OpenRouter documents code-point offsets, not UTF-16 offsets. OptChat's old host-
 
 ## Decision Log
 
-2026-11-07, agent proposal: optional plugin-only transport, explicit artifact bridge, host-resolved credentials, verbatim text only. Default-on and paid budgets remain owner decisions. No new SDK or host fork is prescribed before the installation prototype.
+2026-11-07, superseding owner decisions: implement and ship all proposals; Clairic defaults on for selected public/private code and review text, excluding secrets, with explicit opt-out and deterministic fallback. Credentials use the host resolver including its environment fallback. Every live experiment still requires separate approval of its exact manifest digest and spending cap. Private source leaves the machine when selected; receipts and diagnostics must not expose it.
+
+2026-11-07, accepted implementation direction: plugin-only transport, explicit artifact bridge, host-resolved credentials, verbatim text only. Default-on is owner-approved; paid experiments remain separately gated. No host fork is required.
 
 ## Outcomes & Retrospective
 
-Planning only. No extension exists yet, no paid request ran, and neither wire compatibility nor implementation readiness is claimed from this document.
+Implemented `src/index.ts`, `src/extract.ts` and `src/evidence-artifacts.ts`. Run `bun run test:adapter` for transport boundaries and `bun run smoke:adapter` for package→fresh SDK→registered tool→Python adoption/controller verification. Both passed after repair; the latter used loopback only. The SDK type contract is pinned to 18.10.3 with peer range >=18.10.3 <19; Bun >=1.3.14. Linux descriptor confinement is required for transport; deterministic helpers remain available elsewhere. No real Clairic request ran, so new production wire compatibility, settled billing and quality gains are not claimed. Final release verification is recorded in the documentation index.

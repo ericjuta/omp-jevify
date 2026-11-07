@@ -1,6 +1,6 @@
 # ExecPlan 1: source registry, immutable captures, and scope accounting
 
-This is a living implementation plan, not an implemented feature. Update Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective after each milestone. Follow [planning conventions](../docs/agents/issue-tracker.md).
+This is a living implementation plan; current implementation and verification are recorded below. Update Progress, Surprises & Discoveries, Decision Log, and Outcomes & Retrospective after each milestone. Follow [planning conventions](../docs/agents/issue-tracker.md).
 
 ## Purpose / Big Picture
 
@@ -9,9 +9,10 @@ An agent can import review comments and their supporting code once, retain exact
 ## Progress
 
 - [x] (2026-11-07) Captured the visible proposal and mapped the v0.4.0 contracts.
-- [ ] Resolve the [evidence contract decision](../.scratch/clairic-evidence/issues/01-evidence-contract.md) and obtain implementation authority.
-- [ ] Implement source registry, immutable capture, bounded occurrence validation, and scope ledger.
-- [ ] Integrate the registry with existing review invalidation and prove the installed helper path.
+- [x] (2026-11-07) Owner authorized shipping; implemented the versioned evidence contract in `skills/jevify/evidence.py` without changing the exact-line findings grader.
+- [x] (2026-11-07) Implemented immutable capture, bounded occurrence validation, code-point/UTF-8/full-line mapping and complete scope accounting.
+- [x] (2026-11-07) Actual `%load` helper smoke retained an unresolved record, verified astral/CRLF spans, and detected contract-only drift in a fresh process. Evidence-bound run/adopt/resume refusal is covered by the passing 18-test recovery suite.
+- [x] (2026-11-07) Packaged fresh-process SDK/Python smoke passed: exact Unicode occurrence, null abstention, disabled/path refusal, explicit zero-request recovery, interruption and four controller receipt captures; zero outbound provider requests.
 
 ## Context and Orientation
 
@@ -57,8 +58,8 @@ The strict findings grader accepts complete lines, while Clairic documents sub-l
 
 ## Decision Log
 
-2026-11-07, agent proposal: use a separate versioned evidence artifact and explicit source registry; retain current grading semantics. The user requested planning only. Artifact schema, loader and migration details remain gated by the evidence decision ticket.
+2026-11-07, implemented decision under owner shipping authority: separate `jevify-evidence/1` plan, `jevify-evidence-result/1` transport result and `jevify-evidence-adoption/1` validation artifact. Keep exact-ID/full-line grading unchanged. Load packaged sibling modules relative to the helper's captured compile filename; actual `%load` and ordinary compiled execution both support this without relying on cwd. Existing legacy manifests retain their interpretation; evidence-aware manifests additionally bind live dependencies before judging, adopting or resuming.
 
 ## Outcomes & Retrospective
 
-Plan only. No helper code changed, no runtime acceptance executed, and no new capability or quality gain is claimed.
+Source registry, snapshots, scope ledger, freshness and deletion safeguards are implemented. Provider-free runtime checks verified exact Unicode bytes/full-line citations, retained missing-field scope and fresh-process dependency invalidation. No provider quality gain is claimed. Installed-package acceptance is tracked with the adapter; the final documentation index records release verification.

@@ -1,8 +1,8 @@
 # Prove the installed Python/extension artifact bridge
 
 Type: wayfinder:prototype
-Status: open
-Owner: unassigned
+Status: resolved
+Owner: Main
 Blocked by: [Freeze evidence identity and source ownership](01-evidence-contract.md)
 
 ## Question
@@ -19,4 +19,4 @@ Agent-mediated prepare → jevify_extract → adopt, not a Python HTTP client. E
 
 ## Resolution evidence
 
-An installed-path, fresh-process loopback smoke with a valid Unicode occurrence and controlled interrupted/oversize/path-escape failures. Preserve request evidence on failure and refuse replay across plan digests. Update [ExecPlan 2](../../../plans/clairic-02-extraction-adapter.md) with SDK pin, packaging and exact commands.
+`bun run test:adapter` passed 25 transport tests. `bun run smoke:adapter` packed the candidate, loaded its registered tool through the actual SDK in a fresh isolated process, prepared/adopted evidence with packaged Python, and captured four sanitized receipts in the Python controller. Unicode/CRLF, null guesses, disabled mode, zero-transmission recovery, path refusal and interruption passed with five loopback requests and zero outbound provider requests. [ExecPlan 2](../../../plans/clairic-02-extraction-adapter.md) records SDK/engine requirements and the Linux-only transport boundary. This is not real-provider or quality evidence.

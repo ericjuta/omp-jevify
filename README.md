@@ -1,8 +1,8 @@
 # omp-jevify
 
-An [Oh My Pi](https://github.com/can1357/oh-my-pi) plugin that ships one skill, `jevify`:
-method-first suitability guidance and optional rubric-based classification in the eval
-kernel with `judge_batch` (Jev).
+An [Oh My Pi](https://github.com/can1357/oh-my-pi) plugin for source-backed evidence
+preparation, review, and optional rubric-based classification with `judge_batch` (Jev).
+It ships the `jevify` skill and the `jevify_extract` extraction tool.
 
 Choose the method before judging:
 
@@ -21,22 +21,25 @@ action; read-only calibration is optional. Scores and model agreement are not pr
 permission to edit. It generalises Can Bölük's Jevict
 ([thread](https://x.com/_can1357/status/2102524777776677104)) beyond test pruning.
 
-## Planned evidence preparation
+## Evidence guide
 
-[Clairic planning index](docs/README.md) contains the captured design reference,
-repository assessment, two local Wayfinder maps, and five implementation ExecPlans.
-This is planning only; Clairic extraction is not part of the installed v0.4.0 plugin.
+The [evidence workflow index](docs/README.md) links the captured design reference,
+implementation decisions, Wayfinder maps, and five living ExecPlans. See the
+[on-demand API and workflow guide](skills/jevify/reference.md#source-backed-evidence-workflows)
+for preparation, extraction, source review, refresh and explicit history imports.
 
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.4.0'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.5.0'
 ```
 
 To replace an existing installation with this version, add `--force` to the command.
 
-The install command pins the published tag `v0.4.0`. The helper and eval contracts below
-describe that release (see [Release 0.4.0](#release-040)); earlier tags do not provide them.
+The install command pins `v0.5.0` (see [Release 0.5.0](#release-050)). Earlier release
+sections retain their historical evidence. The extraction extension requires OMP
+18.10.3–18.x and Bun >=1.3.14; descriptor-confined transport currently requires Linux.
+Deterministic Python preparation remains usable without a provider credential.
 
 Start a new OMP session afterwards:
 
@@ -86,6 +89,40 @@ judgments answered from cache reported the alias `openrouter/~typesafe/jev-lates
 so `comparable` is False across cached and fresh rows and the helper cannot prove the alias is
 the same model. `jev-latest` moved from 1.13 to 1.14. Treat unknown provenance as unresolved,
 not as evidence that the primary model answered.
+
+## Release 0.5.0
+
+All five Clairic implementation proposals are included:
+
+- **Immutable evidence:** explicit source roles, exact Unicode/byte/full-line spans,
+  complete scope accounting and live dependency/inventory validation.
+- **Default-on Clairic preparation:** the installed tool uses host-resolved OpenRouter
+  credentials for selected public/private non-secret inputs. `--no-jevify-extract` opts
+  out; structured fields and deterministic preparation do not need a provider. Missing
+  keys and failures preserve unresolved scope. Zero-transmission recovery is explicit;
+  uncertain attempts are never silently retried.
+- **Source-backed review:** question-specific readiness, supporting-source citations,
+  existing-inbox integration, required-facet completeness and explainable refresh.
+  Stale dependencies are rejected before judging/adopting/resuming, not only at review.
+  Imported comments and immutable snapshots cannot become deletion targets.
+- **Additional workflows:** documentation qualifications, bounded migration dependencies,
+  inert issue/log intake and explicit source-verified OptChat/history imports. Historical
+  text and reviewer confirmation never grant edit authority.
+- **Controlled evaluation:** `evals/preparation.py` freezes four treatments and isolates
+  Clairic's incremental effect against identical deterministic preparation. Approval is
+  bound to one durable experiment ledger; accounting comes from completed host events,
+  not model-writable files. Synthetic runs cannot recommend real-world adoption.
+
+Verification: **575 Python tests**, **29 adapter tests**, adapter TypeScript checking,
+and a packaged fresh-process SDK/Python loopback smoke. The packaged smoke captured four
+controller receipts and four real SDK observer lifecycle frames. It exercised initial
+fixed thinking, in-memory usage accounting, Unicode/CRLF, null abstention, opt-out,
+zero-request recovery, unsafe paths and interruption with **zero outbound provider requests**.
+
+No new live Clairic/Jev experiment ran. A real-provider wire smoke still requires exact
+manifest/cap approval; controlled live comparisons additionally require independently
+adjudicated realistic gold. No accuracy, savings or review-time improvement is claimed.
+Provider-reported usage is not a settled invoice; unknown costs remain unknown.
 
 ## Release 0.4.0
 

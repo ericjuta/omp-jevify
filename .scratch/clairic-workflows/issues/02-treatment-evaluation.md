@@ -1,9 +1,9 @@
 # Freeze a fair preparation-treatment experiment
 
 Type: wayfinder:task
-Status: open
-Owner: unassigned
-Blocked by: [Define review readiness and refresh semantics](01-review-readiness.md), [Prove the installed Python/extension artifact bridge](../../clairic-evidence/issues/02-artifact-bridge.md)
+Status: blocked (live measurement only; runner implemented)
+Owner: Main
+Blocked by: independently adjudicated realistic gold and owner approval of its exact manifest digest/spending cap. [Readiness](01-review-readiness.md) and [artifact bridge](../../clairic-evidence/issues/02-artifact-bridge.md) are resolved.
 
 ## Question
 
@@ -15,4 +15,4 @@ Freeze A existing workflow, B deterministic preparation, C the identical B input
 
 ## Resolution evidence
 
-A source-bound preregistration manifest, deterministic dry-run report and admission validation in [ExecPlan 4](../../../plans/clairic-04-controlled-evaluation.md). Operator-attested gold must not be described as authenticated truth. Live execution remains separately blocked by [provider authority](../../clairic-evidence/issues/03-provider-authority.md) and owner approval of the exact manifest/cap.
+The versioned runner, durable approval reservation, matched-treatment controls, strict accounting and recomputed reports are implemented in `evals/preparation.py`. Four provider-free CLI scenarios exercised improvement, worsening, ties and missing output; real-world recommendation remained inconclusive for every synthetic run. [ExecPlan 4](../../../plans/clairic-04-controlled-evaluation.md) retains the unexecuted live-measurement steps. Operator-attested gold is not authenticated truth. No realistic independent corpus or paid approval was fabricated; [provider authority](../../clairic-evidence/issues/03-provider-authority.md) does not waive exact manifest/cap approval.

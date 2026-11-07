@@ -1,7 +1,7 @@
 # Map: source-backed review workflows and measured adoption
 
 Type: wayfinder:map
-Status: charted; decisions open
+Status: implemented; live measurement separately blocked
 
 ## Destination
 
@@ -9,15 +9,15 @@ Make review-finding intake the first end-to-end workflow, then documentation/mig
 
 ## Decisions so far
 
-The owner requested maps and ExecPlans, not execution. The [source proposal](../../docs/references/clairic-feature-spec-2026-11-07.md) is evidence for design intent, not a policy decision. [Repository assessment](../../docs/research/clairic-evidence-preparation.md) distinguishes shipped machinery from proposed interfaces.
+The owner subsequently authorized implementation and shipping of all proposals, with Clairic default-on and an explicit opt-out. Paid experiments still require exact-manifest and cap approval. The [source proposal](../../docs/references/clairic-feature-spec-2026-11-07.md) records design intent; the [repository assessment](../../docs/research/clairic-evidence-preparation.md) records the pre-implementation baseline, not current release proof.
 
 ## Frontier query
 
 Use the open/unclaimed/unblocked ticket rule in [tracker conventions](../../docs/agents/issue-tracker.md). The [evidence map](../clairic-evidence/map.md) owns source and provider prerequisites.
 
-## Not yet specified
+## Implementation boundaries
 
-Specific issue/log source formats and cross-repository interchange version require observed consumer needs. Human review-time measurement protocol and sufficient independent cases must be frozen before benefit claims. Later recipe scope remains planned, not dropped because the adapter is optional.
+Documentation, migration and inert issue/log inputs consume the shared registry. External history uses `jevify-external-evidence/1` with explicit allowlisted origins and source-owner reopening; no ambient OptChat traversal or invented upstream exporter is provided. Human review-time protocol and sufficient independently adjudicated cases still must be frozen before any benefit claim. All recipe implementations are included; live measurement remains separate.
 
 ## Out of scope
 

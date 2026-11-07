@@ -9,10 +9,10 @@ Given review comments, an agent obtains source-backed cases showing what was cla
 ## Progress
 
 - [x] (2026-11-07) Identified the existing review inbox, facts and source-binding contracts.
-- [ ] Resolve [readiness and refresh](../.scratch/clairic-workflows/issues/01-review-readiness.md) and obtain implementation authority.
-- [ ] Implement intake, bounded resolution, question-specific readiness and source-backed state rendering.
-- [ ] Connect existing run/adopt/inbox APIs and dependency refresh.
-- [ ] Demonstrate the full user workflow with deterministic and injected extraction paths.
+- [x] (2026-11-07) Owner authorized implementation/shipping; readiness and refresh contract implemented in `skills/jevify/workflows.py`.
+- [x] (2026-11-07) Implemented intake, bounded resolution, question-specific readiness and source-backed state rendering.
+- [x] (2026-11-07) Connected existing run/adopt/inbox APIs, supporting citations, required-facet completeness and dependency refresh.
+- [x] (2026-11-07) Provider-free runtime smoke admitted only the ready triage record, blocked missing-base judgment, confirmed source review and invalidated it after contract-only drift. Workflow suite: 25 tests passed.
 
 ## Context and Orientation
 
@@ -64,4 +64,4 @@ The existing inbox is already durable and source-bound. The missing capability i
 
 ## Outcomes & Retrospective
 
-Plan only. No review intake implementation or live judgment ran during this documentation task.
+Implemented through `jv.prepare_review`, `jv.evidence_states`, `jv.workflow_review`, `jv.refresh_evidence` and the existing inbox. Runtime verification used injected judgments, not a provider: missing evidence stayed visible, supporting sources were exposed, unresolved siblings prevented settled scope, and contract drift revoked approval. No live judgment, quality or time-saving claim. Final integrated release verification is recorded in the documentation index.

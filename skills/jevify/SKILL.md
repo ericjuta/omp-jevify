@@ -1,6 +1,6 @@
 ---
 name: jevify
-description: "Assess suitability when the user says jevify or asks to use Jev, when the host jevify notice fires, or for repeated independent semantic classifications that deterministic tools cannot decide. Choose a method first; neither item count, the host notice nor loading this skill requires judgment. Not for summaries, counts or plain edits."
+description: "Source-backed review findings, documentation promises, migration checks, issue/log evidence, explicit OptChat history imports, and repeated independent semantic classification. Also use when the user says jevify/Jev or the host notice fires. Choose deterministic tools or direct reading when sufficient; loading this skill never requires judgment. Not for general summaries, counts or plain edits."
 metadata:
   version: 0.4.0
 ---
@@ -30,6 +30,35 @@ other code in one cell fails):
 
 Read [the on-demand reference](skill://jevify/reference.md) only for needed helper
 APIs, extraction details or existing recipes; it is not a second mandatory workflow.
+
+## Source-backed evidence preparation
+
+For review comments, documentation promises, migrations, or issue/log intake, use
+`jv.prepare_review`, `jv.prepare_documentation`, `jv.prepare_migration`, or
+`jv.prepare_issue` with explicitly selected sources and bounded reference resolution.
+Structured fields stay deterministic. For prose, `jv.extraction_request(plan)` returns
+arguments for the `jevify_extract` tool, or `None` when extraction is unnecessary.
+**Clairic defaults on** for these selected inputs; `--no-jevify-extract` opts out.
+Selected private source leaves the machine for OpenRouter; exclude secrets. Credentials
+come only from the host resolver. Transport currently requires Linux; deterministic
+Python preparation remains available without a key or provider. Failure is unresolved
+evidence, never an invented candidate. When a result path exists, adopt it with
+`jv.adopt_evidence(plan, result_path)`; otherwise keep the deterministic plan and its
+unresolved fields. An exact occurrence is not proof of a finding.
+
+Use `jv.workflow_review(evidence, Q)` for ready-only per-question batches. Judge each
+batch with its own `Q` and `extraction=batch["manifest"]`, then open the existing inbox
+with that manifest, the bound rows, and `evidence=evidence`. Missing base versions,
+contracts, wrappers, or related findings block dependent questions, not the scope
+ledger. Open the supporting sources before confirming. An unresolved sibling question
+prevents whole-record approval. Changed source/dependencies require explicit refresh;
+imported snapshots cannot be deleted. Explicit external imports preserve attribution,
+not authority. See the reference for the full workflow and interchange contract.
+
+Live preparation experiments require separate approval of the frozen manifest digest
+and spending cap; default-on extraction is not experiment approval. The controlled
+runner compares Clairic plus deterministic preparation against the same deterministic
+preparation without Clairic. Synthetic/injected demonstrations never establish gains.
 
 ## With the host notice
 

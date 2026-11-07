@@ -1,6 +1,6 @@
-# Clairic evidence-preparation planning
+# Clairic source-backed evidence workflows
 
-Planning checkpoint: 2026-11-07. Runtime baseline: omp-jevify v0.4.0 (`9fe7062`). These documents propose implementation; they do not report it as shipped.
+Implementation checkpoint for v0.5.0: 2026-11-07. Baseline: omp-jevify v0.4.0 (`9fe7062`). All five feature plans are implemented and passed provider-free release checks. The captured reference and repository assessment preserve the pre-implementation design context, not evidence of model quality.
 
 ## Start here
 
@@ -22,10 +22,19 @@ The first complete user journey is review comments → source-backed cases → e
 
 ## Authority and status
 
-The user requested reference capture, Wayfinder maps, and ExecPlans. No runtime implementation, paid experiment, credential access, commit, push, installation, or release is authorized by these documents. OptChat's prior approvals and spending caps are precedent only, not permissions for this repo. Engineering defaults are proposals until their decision tickets are resolved; owner decisions remain open. Keep each plan's Progress and Decision Log current.
+The owner subsequently authorized implementation and shipping of all five proposals. Clairic defaults on for selected evidence inputs, with explicit opt-out and deterministic fallback. Selected public/private code and review text may be transmitted, excluding secrets, using host-resolved OpenRouter credentials (including the host's environment fallback); no plugin-owned key path is allowed. This supersedes the earlier opt-in policy. Live experiments still require separate approval of the exact manifest digest and spending cap. OptChat approvals do not transfer. Implementation and provider-free release checks are complete; publication and installation are separate from model-quality evidence.
 
-No quality, savings, or review-time improvement is established by this planning work. No new model requests were made to Clairic or Jev for evaluation.
+No quality, savings, or review-time improvement is established. New verification is provider-free: source/readiness/inbox/recipe smokes, synthetic four-arm CLI scenarios, and a packaged fresh-process SDK/Python loopback bridge. No new Clairic or Jev provider requests were made. A real-provider wire smoke still needs manifest/cap approval; a controlled live comparison additionally needs independently adjudicated realistic gold.
+
+## Release verification
+
+- 575 Python tests, 29 adapter regressions, and TypeScript checking passed.
+- Packaged fresh-process SDK/Python smoke passed: four controller captures, four real SDK observer lifecycle frames, five loopback requests, zero outbound provider requests.
+- Initial fixed thinking, in-memory usage identity and once-only accounting were exercised through the generated observer and real SDK session/credential components without a provider.
+- All four final CLI demonstrations passed; real-world recommendations remained `inconclusive`.
+- Final focused static reviews cleared the reported transport and evidence/evaluation blockers. These reviews did not run provider calls or establish model quality.
+- Package inventory contains only the 12 intended source/documentation files, excluding Python bytecode caches.
 
 ## Documentation verification
 
-The two captured turns match the browser extraction verbatim (23,007 characters of conversation). All 66 relative links across the 17 planning/reference documents resolve; the six-ticket blocker graph is acyclic, and all five ExecPlans contain the required living-plan sections. `git diff --check` passed. These are documentation checks, not runtime feature tests.
+The two captured turns match the browser extraction verbatim (23,007 characters of conversation). All 64 current relative links across the 17 planning/reference documents resolve; the initial six-ticket blocker graph was checked as acyclic, and all five ExecPlans contain the required living-plan sections. `git diff --check` passed. These are documentation checks, not runtime feature tests.

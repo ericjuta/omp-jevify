@@ -297,9 +297,9 @@ collisions gain `#2`, `#3`, and so on.
 | `jv.states(units, render=None, *, cap=None, report=None) -> {id: state}` | Render/cap strings and drop empty states; a supplied report retains per-original reasons and truncation. |
 | `jv.plan(states, Q, *, grouping=None, total_budget=64_000, single_budget=32_000, headroom=0.10, framing=512, sizer=None)` | Check state plus all/longest questions, including slot expansion. No inference calls; unknown sizing is not admission. Also returns `labels` (per choice question), `over_labels` (choice questions above `MAX_LABELS`, which make the plan inadmissible) and `pack_suggestion` (None, or a note when many tiny flat states leave requests nearly empty; plan never packs for you). The 32k `single_budget` stays under the measured jev-1.13 limit of about 32.7k input tokens (route-specific). |
 | `jv.pack(units, render, Q, *, by=None, k=8, shared=None, ...) -> (states, grouping)` | Budget-aware grouping with no truncation; exclusions retain reasons. Accepts the same budgeting knobs as `plan`. |
-| `jv.extraction(units, states, *, grouping=None, outcomes=None, root=".", revision=None, hits=None)` | Freeze file/unit/state identities, locations, per-original outcomes and independent source-hit mapping. |
+| `jv.extraction(units, states, *, grouping=None, outcomes=None, root=".", revision=None, hits=None, evidence=None)` | Freeze file/unit/state identities, locations, per-original outcomes and independent source-hit mapping. |
 | `jv.validate_extraction(manifest, states=None, *, grouping=None, root=None)` | Check manifest identity, source drift and coverage separately. |
-| `jv.review_queue(path, manifest, items, *, Q, policy, root=None, rows=None) -> summary` | Create or reopen the durable review at `path`. Items are `{id: {"unit", "claim", optional "question"}}`; model fields come only from `rows` (the run judging this `Q` and manifest). A different plan at an existing path is refused. |
+| `jv.review_queue(path, manifest, items, *, Q, policy, root=None, rows=None, evidence=None) -> summary` | Create or reopen the durable review at `path`. Items are `{id: {"unit", "claim", optional "question"}}`; model fields come only from `rows` (the run judging this `Q` and manifest). A different plan at an existing path is refused. |
 | `jv.review_items(path, *, Q, root=None) -> [item]` | Every item with frozen excerpt, model fields, fingerprint, view, verdict, stale reason and history. |
 | `jv.review_questions(path, *, Q, root=None, limit=5) -> {questions, bindings, open, stale}` | Ask-compatible questions (pending before unresolved) with bindings to echo. Rubric or policy drift raises `ReviewRefused`. |
 | `jv.adjudicate(path, decisions, *, Q, reviewer, root=None) -> {batch, applied, review}` | Atomic batch of `{item, fingerprint, view, verdict, evidence?, note?}`; reviewer `{"kind": "human" \| "agent", "id"}` is self-declared. Any refusal raises `jv.ReviewRefused` (`.problems`) and records nothing. |
@@ -322,7 +322,7 @@ collisions gain `#2`, `#3`, and so on.
 | `jv.load(path) -> rows` | Read that header and return list-compatible rows with their receipt; headerless legacy JSONL is rejected. |
 | `jv.delete_spans(units, ids, *, root=".", dry_run=True, manifest=None, review=None, Q=None) -> {file: lines_removed}` | Remove merged inclusive spans. A manifest guards source/unit identity. A `review` path requires `manifest` and `Q`, and each target must be in the review's `approved_units`. Failures raise before any write, including dry runs. |
 | `jv.report(rows, Q, *, title="jevify") -> str` | Markdown counts, hashes, labels, state summary, and the rows' own bound run receipt; never substitute the latest run. |
-| `jv.adopt(source, states, Q, *, intent=None, grouping=None, batch=None) -> rows` | Bind output of the built-in `judge_batch()` (a host batch read without draining, a `{key: item or answers}` mapping, or `drain()` pairs) to the submitted states as receipt-bound rows, so `flag`, policy rules, review and `report` apply. Every state needs a result (a missing one becomes an error row); a key outside `states` is refused. Answers-only sources have an unknown served model. `batch=` (with drained items only; a batch source plus `batch=` raises `ValueError`) is the host batch or its `status()` dict: the receipt keeps batch ID, cost estimate and host done/total while drained items keep their served model. Billing stays `estimate_unverified`. |
+| `jv.adopt(source, states, Q, *, intent=None, grouping=None, batch=None, extraction=None) -> rows` | Bind output of the built-in `judge_batch()` (a host batch read without draining, a `{key: item or answers}` mapping, or `drain()` pairs) to the submitted states as receipt-bound rows, so `flag`, policy rules, review and `report` apply. Every state needs a result (a missing one becomes an error row); a key outside `states` is refused. Answers-only sources have an unknown served model. `batch=` (with drained items only; a batch source plus `batch=` raises `ValueError`) is the host batch or its `status()` dict: the receipt keeps batch ID, cost estimate and host done/total while drained items keep their served model. Billing stays `estimate_unverified`. |
 | `jv.scalar(value, qid=None)` | One answer as a plain value: choice → label, bool → P(yes), score → weighted level index. `value` is a jv row plus `qid`, a host answer mapping, or a host answers mapping/item plus `qid`; otherwise `ValueError`. |
 | `jv.pilot_check(rows, Q, *, rule=None, max_flag_rate=0.4, max_band_rate=0.4, catchall=(), max_catchall_rate=0.4, min_units=10) -> dict` | Decide from a pilot whether a full sweep is worth running. `rule` is the frozen `jv.policy_rule`, else `flag` defaults. `provenance_unknown` is excluded from the flag rate (counted in `provenance_only`). Rates: `flag_rate`, `band_rate` (choice top probability or bool P(yes) in 0.3–0.7), and `catchall` (`{qid: [labels]}` share). Any rate above its max → `use_direct`; fewer than `min_units` answered → `too_small`; else `proceed`. Returns `{verdict, units, answered, flagged, provenance_only, flag_rate, band, band_rate, catchall, errors, reasons}`. `proceed` is not a quality claim. |
 | `jv.remaining(states, prior_rows, Q) -> (todo_states, reused_rows)` | Reuse pilot verdicts: a prior row is reused only if it has no error, is not grouped, has `qhash == jv.qhash(Q)` and `state_sha256 == jv.state_digest(state)`. Anything else is judged again. Combining reused rows with a later run is a splice and must be reported as one. |
@@ -817,6 +817,158 @@ or TTSR promises, and do not measure the unreleased patch's runtime or quality.
   second. `rg`, git, and `uv` were present; numpy, matplotlib, and tree-sitter were
   absent. `%load skill://jevify/jevify.py` resolved a skill created during that
   session. Current environments may differ.
+
+## Source-backed evidence workflows
+
+These APIs prepare evidence; they do not establish a claim's truth. Clairic is enabled
+by default for explicitly selected prose inputs. Use the host flag
+`--no-jevify-extract` to disable transport. Python preparation is network-free; structured
+JSON claims bypass extraction. The registered `jevify_extract` tool uses only the host's
+OpenRouter credential resolver and the fixed `cloudflare/clairic` extraction route.
+Selected private code is transmitted. Mark secret sources with `classification="secret"`
+or `sensitive=True`; never select secrets for provider work. The plugin does not own an
+API key or read a key environment variable itself. The host's own environment fallback
+is allowed. Descriptor-confined transport currently requires Linux; missing credentials,
+unsupported platforms and disabled transport do not disable deterministic preparation.
+
+| Helper | Contract |
+|---|---|
+| `prepare_evidence(records, fields, *, root, sources, limits=None)` | Capture declared source bytes and identities; return an immutable plan. No network. |
+| `adopt_evidence(plan, result_path)` | Validate a result against the exact plan and source occurrences; retain missing/rejected fields. |
+| `validate_evidence(evidence)` | Check immutable artifacts, live origins, revisions and declared inventories; report dependent stale records. |
+| `prepare_review(records, *, root, sources, resolver=None, limits=None)` | Assemble original comments, current/base code, contracts and dependencies with question-specific readiness. |
+| `prepare_documentation(documents, *, root, sources, resolver=None, limits=None)` | Preserve complete Markdown sections, conditions, exceptions and code fences; section counts are not semantic recall. |
+| `prepare_migration(records, *, root, sources, resolver=None, limits=None)` | Require declared callsite/callee, old/new contracts and referenced wrappers; renamed calls alone are not evidence. |
+| `prepare_issue(records, *, root, sources, resolver=None, limits=None)` | Preserve supplied symptoms, versions and logs as inert data; do not invent missing incident details. |
+| `extraction_request(evidence)` | Return `{artifact_root, plan_digest}` for the tool, or `None` when deterministic/adopted fields suffice. |
+| `evidence_states(evidence, Q)` | Workflow artifacts produce ready-only states and per-question admissions; the scope ledger retains blocked originals. |
+| `workflow_review(evidence, Q)` | Build the existing extraction/inbox interface and separate ready-only `batches[qid]`, each with its exact rubric and manifest. |
+| `refresh_evidence(previous, current, Q, *, previous_Q=None)` | Explain changed/new/removed/reusable records, binding dependencies, field policies, rendered states and rubric. Does not rewrite history. |
+| `import_external_evidence(envelope, *, allowed_origins, reopen=None, previous=None)` | Import explicitly selected source-owner-verifiable history; never import edit authority. |
+
+### Prepare, extract if needed, and review
+
+Sources are explicit descriptors. A file descriptor has `id`, `role`, and a path relative
+to `root`; an inline descriptor has `text` and a stable `snapshot_identity` instead.
+Optional `subject`, `version`, `revision`, and `classification` preserve context. Roles
+include `original_comment`, `current_code`, `base_code`, `governing_contract`, `helper`,
+`consumer`, and `external_history`. Files default to live refresh; inline captures default
+to snapshot refresh. Declare source inventories when additions/removals must invalidate
+coverage. Neither a source registry nor a section parser proves semantic completeness.
+
+A structured review record looks like this (the selected source IDs must exist):
+
+```python
+record = {
+    "id": "review-1", "source_id": "comment",
+    "claim": "Authentication failures are retried.",
+    "required_questions": ["triage", "introduced_by_diff"],
+    "dependencies": {
+        "current_code": ["current"], "governing_contract": ["contract"],
+    },
+}
+plan = jv.prepare_review([record], root=ROOT, sources=SOURCES)
+evidence = plan  # Deterministic input; replace with the adopted artifact if extracting.
+request = jv.extraction_request(plan)
+```
+
+A supplied structured `claim` is deterministic input, not a model observation. Omitting
+it for prose produces an extraction request. Invoke `jevify_extract` with `request`
+through the host tool interface, then use `jv.adopt_evidence(plan, result_path)` with the
+returned result path. If refusal, interruption or an unsupported platform leaves no
+`result_path`, keep the deterministic plan and report extraction unresolved; do not
+fabricate a result artifact or call adoption with a missing path. Disabled/no-key/error
+results retain unresolved fields. Do not substitute a provider `guess` for a null value. Exact raw code-point spans are checked
+and converted to UTF-8 byte spans and enclosing complete lines; fragment matches do not
+weaken the strict full-line findings grader. An extraction occurrence is still unverified.
+
+Extraction instructions include the frozen target record and retrieved-passage context,
+so two claims in the same source remain distinguishable. The source `state` stays unchanged:
+occurrence offsets address the original source, not the added instructions. All transmitted
+context counts toward request limits.
+
+```python
+workflow = jv.workflow_review(evidence, Q)
+batch = workflow["batches"]["triage"]
+# Only admitted states enter this single-question run.
+rows = await jv.run(batch["states"], batch["Q"], intent="Review admitted findings",
+                    extraction=batch["manifest"])
+# For a host batch that already ran:
+# rows = jv.adopt(items, batch["states"], batch["Q"], batch=b,
+#                 extraction=batch["manifest"])
+jv.review_queue(REVIEW, batch["manifest"], batch["items"], Q=batch["Q"],
+                policy=jv.policy(batch["Q"], {"triage": {"top": 0.5}}),
+                rows=rows, evidence=evidence)
+page = jv.review_questions(REVIEW, Q=batch["Q"])
+```
+
+Do not call a judge for an empty batch. Do not merge rows judged under different question
+hashes. Workflow extraction manifests bind the complete evidence artifact: `run`, `adopt`
+and `resume` refuse changed live dependencies before new judgment or result reuse. The
+inbox inherits that binding even if its optional `evidence` argument is omitted. Missing base evidence blocks `introduced_by_diff`; missing related findings block
+duplicate judgments. The scope ledger retains these facets even when another facet is
+ready. `review_items` exposes role-labeled supporting source locators and hashes; open
+and cite those immutable sources before confirming. Source confirmation is not permission
+to edit. `approved_units`, `complete`, and `settled` do not hide unresolved required
+questions. Changes to supporting contracts invalidate dependent approvals even if the
+original comment has not changed. Imported comments and `.jevify-evidence` snapshots are
+not deletion targets, including when ordinary deletion calls omit a review manifest.
+
+Artifacts live beneath `root/.jevify-evidence`: content-addressed snapshots, frozen plans,
+and adopted results. Keep the directory private and out of source control. Repeating the
+same preparation preserves identity; conflicting immutable bytes are refused. Refresh
+creates new evidence instead of silently rewriting decisions. The transport reserves
+attempts before transmission; never delete an uncertainty record to force a retry.
+For a validated `disabled` or `no_credential` result with zero transmitted requests,
+reinvoke `jevify_extract` with the same plan arguments and
+`recover_zero_transmission: true` after fixing the cause. This explicitly creates a new
+immutable generation and preserves the earlier result. It does not retry a possibly
+billed or uncertain attempt. A cached result is historical evidence, not accounting for
+a new call; live experiments capture the host's completed tool event separately.
+
+### Explicit OptChat/history import
+
+The interchange is `jevify-external-evidence/1`, not ambient access to an OptChat store.
+An envelope binds an allowlisted `origin`; source kind/store/message/snapshot identities
+and cutoff; a half-open UTF-8 byte range; exact content and SHA-256; completeness/omissions;
+and attributed kind, claimed status and provenance. Use the supplied source-owner
+`reopen(locator)` boundary to verify the exact original. Missing originals remain
+unverifiable; mismatching bytes or identity are refused. A tool completion report is not a
+successful review, and an assistant proposal does not become a user decision because an
+export calls it accepted. The returned descriptor is `external_history`, read-only and
+non-deletable. Pass it explicitly in `sources`; no rule or authority is imported.
+
+### Controlled preparation experiments
+
+From a repository checkout, the separate runner is `python3 evals/preparation.py`.
+It preserves the existing strategy grader. The primary contrast is C (deterministic
+preparation plus Clairic) minus B (the identical deterministic preparation); A (existing
+workflow) and D (direct review) are secondary comparisons. Source inventory, independent
+gold, implementation identities, retrieval budget, thresholds, labels and treatment order
+are frozen before execution. `freeze`, `preflight`, `run`, and `report` expose that flow.
+
+The supported host judgment path disables reasoning, so judge `thinking` must be `off`;
+unsupported effort is refused before paid admission. Every arm loads the same observer
+for effective host thinking and in-memory usage. Writable session journals and model-written
+cost fields are not attestations. This trusts the host/controller process and event stream;
+it is not an OS sandbox against arbitrary same-user process tampering. Provider-reported
+usage and catalog estimates remain distinct, and neither establishes settled billing.
+
+Provider-free executable scenarios use fresh output directories:
+
+```sh
+python3 evals/preparation.py demo --out /tmp/jevify-demo-improves --scenario improves
+python3 evals/preparation.py demo --out /tmp/jevify-demo-worsens --scenario worsens
+python3 evals/preparation.py demo --out /tmp/jevify-demo-ties --scenario ties
+python3 evals/preparation.py demo --out /tmp/jevify-demo-missing --scenario missing
+```
+
+These inject synthetic results to exercise the software gates. Their top-level real-world
+recommendation remains `inconclusive`, even when the simulated gate prefers extraction.
+A live run needs independently adjudicated realistic gold and separate owner approval of
+the exact manifest digest and cap. Default-on transport does not grant that approval.
+Unknown costs remain unknown; a reservation budget is not a guaranteed invoice ceiling.
+No quality, savings or human-review-time gain follows from these demonstrations.
 
 ## Optional recipes
 

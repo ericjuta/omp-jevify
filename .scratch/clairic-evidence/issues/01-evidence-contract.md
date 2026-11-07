@@ -1,8 +1,8 @@
 # Freeze evidence identity and source ownership
 
 Type: wayfinder:research
-Status: open
-Owner: unassigned
+Status: resolved
+Owner: Main
 Blocked by: none
 
 ## Question
@@ -19,4 +19,4 @@ Use explicit source registry entries and versioned evidence artifacts, with impo
 
 ## Resolution evidence
 
-A field-level contract and migration/caller inventory attached to [ExecPlan 1](../../../plans/clairic-01-evidence-contracts.md). Show examples for missing fields, repeated Unicode quotes, source deletion, new inventory members, and a changed supporting contract. Research is not runtime proof.
+Implemented versioned contracts in [evidence.py](../../../skills/jevify/evidence.py), exposed through the installed-relative helper loader. [ExecPlan 1](../../../plans/clairic-01-evidence-contracts.md) records exact spans, immutable snapshots, scope accounting and dependency validation. Provider-free smoke verified astral/CRLF mapping, retained missing fields and fresh-process contract drift. Submission manifests now carry the evidence dependency contract through run/adopt/resume; imported snapshots remain non-deletable. Packaged bridge proof is tracked separately, not implied by this decision.

@@ -9,8 +9,8 @@ Users can determine whether Clairic adds value over the exact same deterministic
 ## Progress
 
 - [x] (2026-11-07) Identified that existing pilot gates compare methods, not preparation treatments.
-- [ ] Resolve [comparison preregistration](../.scratch/clairic-workflows/issues/02-treatment-evaluation.md).
-- [ ] Implement separate versioned treatment identity, validation and reporting without relaxing old gates.
+- [x] (2026-11-07) Implemented the preregistration contract, independent-case admission and fixed C-versus-B primary contrast.
+- [x] (2026-11-07) Implemented `evals/preparation.py` freeze/preflight/run/report and four provider-free executable demonstration scenarios without changing old strategy gates.
 - [ ] Freeze independently adjudicated cases, thresholds, artifacts and provider-free preflight.
 - [ ] Obtain owner approval of the exact manifest digest and total spend cap before any live call.
 - [ ] Execute the approved run, adjudicate outcomes and record adoption/withholding without post-hoc threshold changes.
@@ -59,10 +59,14 @@ Freeze immutable manifests and per-attempt receipts; do not overwrite a complete
 
 The existing strategy gate deliberately rejects many comparisons that look superficially similar. The new treatment comparison must preserve that safety rather than loosen it. A source-matching occurrence can still be semantically wrong for the requested subject/version.
 
+Final review identified that model-writable session journals cannot attest judge identity or costs, requested effort is not observed effort, and irrelevant source padding cannot make a repeated gold key independent. Completion receipts must remain readable during interrupted shutdown. Release acceptance includes regressions at these boundaries, rather than relying on successful synthetic reports alone.
+
 ## Decision Log
+
+2026-11-07, superseding owner decision: Clairic defaults on for selected public/private non-secret source, with explicit opt-out and deterministic fallback, using host-resolved credentials including host environment-key fallback. Implementation and shipping are authorized. Exact manifest digest and cap approval remain mandatory before live experiments.
 
 2026-11-07, agent proposal: separate treatment schema; C/B is the extraction attribution comparison; no transfer of OptChat's budgets or adoption decisions. Exact statistical policy, independent case counts and the paid cap remain unresolved until preregistration and owner approval.
 
 ## Outcomes & Retrospective
 
-No experiment ran. No cost, quality, review-burden or savings improvement is claimed. The implementation and live-evaluation gates remain open.
+The executable controlled runner is implemented. The final repaired Python suite passed 575 tests, and the focused static rereview cleared all six remaining release blockers. Four final CLI demonstrations exited successfully: simulated improvement selected extraction, worsening/tie selected deterministic preparation, and missing results withheld the software gate. All four top-level real-world recommendations remained `inconclusive`. These were injected synthetic software checks, not experiments. Independent realistic gold and owner manifest/cap approval remain prerequisites for live measurement. No cost, quality, review-burden or savings improvement is claimed.

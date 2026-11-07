@@ -1,8 +1,8 @@
 # Bind recipe scope and external evidence authority
 
 Type: wayfinder:research
-Status: open
-Owner: unassigned
+Status: resolved
+Owner: Main
 Blocked by: [Define review readiness and refresh semantics](01-review-readiness.md)
 
 ## Question
@@ -15,4 +15,4 @@ Preserve whole enclosing passages, conditions, negation, versions and exceptions
 
 ## Resolution evidence
 
-A versioned interchange example and source-origin reopen test design; conservative handling of unavailable originals and claimed outcomes; recipe acceptance cases in [ExecPlan 5](../../../plans/clairic-05-recipes-and-import.md). Keep local retrieval locators distinct from external store identities.
+Implemented `jevify-external-evidence/1` with explicit allowlisted origins, exact byte/source identity and injected source-owner reopening; never ambient store traversal. [ExecPlan 5](../../../plans/clairic-05-recipes-and-import.md) records runtime checks for qualification retention, missing-wrapper refusal and verified fixture occurrences without authority transfer. Issue/log inputs remain inert data. Unavailable originals remain unverifiable; this does not claim a newly shipped upstream OptChat exporter.

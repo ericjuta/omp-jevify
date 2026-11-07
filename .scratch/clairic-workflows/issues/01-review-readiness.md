@@ -1,8 +1,8 @@
 # Define review readiness and refresh semantics
 
 Type: wayfinder:research
-Status: open
-Owner: unassigned
+Status: resolved
+Owner: Main
 Blocked by: [Freeze evidence identity and source ownership](../../clairic-evidence/issues/01-evidence-contract.md)
 
 ## Question
@@ -15,4 +15,4 @@ Preserve finding categories valid_actionable, valid_nit, invalid, duplicate and 
 
 ## Resolution evidence
 
-Ready/missing/conflicting/version-mismatch/budget-exhausted transition examples, a complete caller inventory, and a source-backed review demonstration plan in [ExecPlan 3](../../../plans/clairic-03-review-workflow.md). Explain how review approval continues to grant no edit authority.
+Implemented question-specific readiness, explicit dependency refresh and existing-inbox integration in [workflows.py](../../../skills/jevify/workflows.py) and [ExecPlan 3](../../../plans/clairic-03-review-workflow.md). Missing base/wrapper/related evidence cannot enter its dependent judgment. Required facets and frozen source spans constrain review scope; unrelated drift cannot clear prior prerequisite blocks. Runtime smoke confirmed source-backed review then revoked approval after contract-only drift. Confirmation still reports grants_authority=false.

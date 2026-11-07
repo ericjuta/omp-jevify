@@ -9,11 +9,10 @@ Agents can prepare documentation promises and migration call sites with their ne
 ## Progress
 
 - [x] (2026-11-07) Retained all later workflow proposals from the captured share.
-- [ ] Resolve [recipe and import boundaries](../.scratch/clairic-workflows/issues/03-recipes-import.md) and obtain implementation authority.
-- [ ] Deliver documentation-claim preparation with qualification retention.
-- [ ] Deliver bounded migration evidence expansion and source-aware refresh.
-- [ ] Deliver explicit OptChat interchange and source reopening.
-- [ ] Exercise issue/log intake as a consumer of the same contract and update on-demand recipes.
+- [x] (2026-11-07) Owner authorized implementation/shipping; explicit import and recipe boundaries implemented.
+- [x] (2026-11-07) Delivered documentation sections preserving qualifications and bounded migration evidence/refresh.
+- [x] (2026-11-07) Delivered versioned external-history imports with allowlisted origins and source-owner reopening; no ambient OptChat store access.
+- [x] (2026-11-07) Exercised documentation, missing-wrapper migration and a reopened fixture import through the actual helper. The 25-test workflow suite also covers inert issue/log intake and external identity refusal; on-demand recipes updated.
 
 ## Context and Orientation
 
@@ -61,4 +60,4 @@ The share requests later issue/log workflows as well as OptChat interchange. The
 
 ## Outcomes & Retrospective
 
-Plan only. No new recipe, external-store access or runtime workflow was executed during this planning task.
+Implemented `prepare_documentation`, `prepare_migration`, `prepare_issue`, and `import_external_evidence` on the shared evidence contract. Provider-free runtime smoke retained documentation qualifiers, refused an unresolved migration wrapper, and kept an imported assistant proposal separate from authority. External reopening used a source-owner fixture, not a live OptChat store or a claimed upstream export API. No provider requests or quality claims.
