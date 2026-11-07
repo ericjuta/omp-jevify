@@ -21,6 +21,12 @@ action; read-only calibration is optional. Scores and model agreement are not pr
 permission to edit. It generalises Can Bölük's Jevict
 ([thread](https://x.com/_can1357/status/2102524777776677104)) beyond test pruning.
 
+## Planned evidence preparation
+
+[Clairic planning index](docs/README.md) contains the captured design reference,
+repository assessment, two local Wayfinder maps, and five implementation ExecPlans.
+This is planning only; Clairic extraction is not part of the installed v0.4.0 plugin.
+
 ## Install
 
 ```sh
