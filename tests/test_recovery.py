@@ -328,6 +328,30 @@ class CompletedBundleTests(RecoveryTests):
 
 
 class PreflightAndExtractionTests(RecoveryTests):
+    async def test_changed_contract_refuses_new_judgment_adoption_and_resume(self):
+        (self.root / "comment.txt").write_text("Retain errors.\n", encoding="utf-8")
+        contract = self.root / "contract.md"
+        contract.write_text("Retain errors.\n", encoding="utf-8")
+        evidence = jv.prepare_evidence(
+            [{"id": "a", "source_id": "comment", "required_fields": [],
+              "required_questions": ["safe"], "dependencies": ["contract"]}], {}, root=self.root,
+            sources=[{"id": "comment", "role": "original_comment", "path": "comment.txt"},
+                     {"id": "contract", "role": "governing_contract", "path": "contract.md"}])
+        units = {"a": {"file": "comment.txt", "line": 1, "end_line": 1}}
+        states = {"a": "Retain errors under the captured contract."}
+        manifest = jv.extraction(units, states, root=self.root, evidence=evidence)
+        await self.quiet(jv.run(states, Q, intent="source-backed", extraction=manifest,
+                                bundle_path=self.bundle))
+        contract.write_text("Discard errors.\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "evidence dependency"):
+            await self.quiet(jv.run(states, Q, intent="stale", extraction=manifest))
+        with self.assertRaisesRegex(ValueError, "evidence dependency"):
+            jv.adopt({"a": {"safe": {"type": "bool", "bool": 0.9}}}, states, Q, extraction=manifest)
+        with self.assertRaisesRegex(ValueError, "cannot resume stale evidence"):
+            await self.quiet(jv.resume(self.bundle, intent="stale resume"))
+        self.assertEqual(len(self.host.submissions), 1)
+        self.assertEqual(self.host.attach_calls, [])
+
     async def test_preflight_refuses_an_over_budget_request_before_submission(self):
         with mock.patch.object(jv, "jev_tokens", lambda text, **kwargs: 50_000):
             with self.assertRaisesRegex(ValueError, "preflight refuses"):

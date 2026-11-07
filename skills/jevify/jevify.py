@@ -10,6 +10,7 @@ import concurrent.futures as _jv_futures
 import copy as _jv_copy
 import hashlib as _jv_hashlib
 import importlib as _jv_importlib
+import importlib.util as _jv_importlib_util
 import json as _jv_json
 import math as _jv_math
 import os as _jv_os
@@ -23,6 +24,25 @@ import sys as _jv_sys
 import tempfile as _jv_tempfile
 import time as _jv_time
 import types as _jv_types
+
+
+_JV_MODULE_DIR = _jv_pathlib.Path((lambda: None).__code__.co_filename).resolve().parent
+_JV_MODULES = {}
+
+
+def _jv_module(name):
+    """Load packaged siblings from this helper's location, including under %load."""
+    if name not in {"evidence", "workflows"}:
+        raise ValueError("unknown jevify module")
+    if name not in _JV_MODULES:
+        spec = _jv_importlib_util.spec_from_file_location(
+            f"_jevify_{name}", _JV_MODULE_DIR / f"{name}.py")
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load packaged jevify {name}")
+        module = _jv_importlib_util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _JV_MODULES[name] = module
+    return _JV_MODULES[name]
 
 
 class _JvRows(list):
@@ -206,6 +226,80 @@ class jv:
     EDGES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.01)
     stats = {"states": {}, "runs": []}
     frozen = None
+
+    @staticmethod
+    def prepare_evidence(records, fields, *, root, sources, limits=None):
+        """Capture declared inputs without network access; return an immutable extraction plan."""
+        return _jv_module("evidence").prepare_evidence(
+            records, fields, root=root, sources=sources, limits=limits)
+
+    @staticmethod
+    def adopt_evidence(plan, result_path):
+        """Validate candidate occurrences against immutable sources, never infer support."""
+        return _jv_module("evidence").adopt_evidence(plan, result_path)
+
+    @staticmethod
+    def validate_evidence(evidence):
+        """Check snapshot integrity and live dependencies before review or reuse."""
+        return _jv_module("evidence").validate_evidence(evidence)
+
+    @staticmethod
+    def evidence_states(evidence, Q):
+        """Render admitted evidence without converting occurrences into verified claims."""
+        return _jv_module("workflows").evidence_states(
+            evidence, Q, evidence_api=_jv_module("evidence"))
+
+    @staticmethod
+    def prepare_review(records, *, root, sources, resolver=None, limits=None):
+        """Prepare source-backed review packets with explicit question-readiness gates."""
+        return _jv_module("workflows").prepare_review(
+            records, root=root, sources=sources, resolver=resolver, limits=limits,
+            evidence_api=_jv_module("evidence"))
+
+    @staticmethod
+    def prepare_documentation(documents, *, root, sources, resolver=None, limits=None):
+        """Preserve documentation conditions and their supporting source dependencies."""
+        return _jv_module("workflows").prepare_documentation(
+            documents, root=root, sources=sources, resolver=resolver, limits=limits,
+            evidence_api=_jv_module("evidence"))
+
+    @staticmethod
+    def prepare_migration(records, *, root, sources, resolver=None, limits=None):
+        """Account for declared migration obligations without treating renamed calls as proof."""
+        return _jv_module("workflows").prepare_migration(
+            records, root=root, sources=sources, resolver=resolver, limits=limits,
+            evidence_api=_jv_module("evidence"))
+
+    @staticmethod
+    def prepare_issue(records, *, root, sources, resolver=None, limits=None):
+        """Prepare issue/log evidence through the same bounded source contract."""
+        return _jv_module("workflows").prepare_issue(
+            records, root=root, sources=sources, resolver=resolver, limits=limits,
+            evidence_api=_jv_module("evidence"))
+
+    @staticmethod
+    def import_external_evidence(envelope, *, allowed_origins, reopen=None, previous=None):
+        """Import explicitly selected, source-verifiable history without importing authority."""
+        return _jv_module("workflows").import_external_evidence(
+            envelope, allowed_origins=allowed_origins, reopen=reopen, previous=previous)
+
+    @staticmethod
+    def extraction_request(evidence):
+        """Return the prepared Clairic tool arguments, or None when no extraction is needed."""
+        return _jv_module("workflows").extraction_request(
+            evidence, evidence_api=_jv_module("evidence"))
+
+    @classmethod
+    def workflow_review(cls, evidence, Q):
+        """Build ready-only per-question batches and preserve all unresolved scope."""
+        return _jv_module("workflows").workflow_review(
+            evidence, Q, helper=cls, evidence_api=_jv_module("evidence"))
+
+    @staticmethod
+    def refresh_evidence(previous, current, Q, *, previous_Q=None):
+        """Explain reuse and invalidation without rewriting earlier judgments or approvals."""
+        return _jv_module("workflows").refresh_evidence(
+            previous, current, Q, previous_Q=previous_Q, evidence_api=_jv_module("evidence"))
 
     @classmethod
     def choice(cls, instructions, criteria=None, **labels):
@@ -544,7 +638,7 @@ class jv:
 
     @classmethod
     def extraction(cls, units, states, *, grouping=None, outcomes=None, root=".", revision=None,
-                   hits=None):
+                   hits=None, evidence=None):
         """Bind extracted units, the states run() will receive, and their outcomes to source bytes.
 
         units: ID -> unit dict with a root-relative "file" and optional "line"/"end_line" (1-based).
@@ -616,6 +710,12 @@ class jv:
                 "grouping": None if grouping is None else _jv_copy.deepcopy(grouping),
                 "hits": {"checked": len(hit_rows), "uncovered": uncovered},
                 "coverage": coverage}
+        if evidence is not None:
+            evidence_check = cls.validate_evidence(evidence)
+            if not evidence_check["ok"]:
+                raise ValueError("extraction requires current evidence: "
+                                 + "; ".join(evidence_check["problems"]))
+            body["evidence"] = _jv_copy.deepcopy(evidence)
         body["digest"] = cls._digest(body)
         return body
 
@@ -657,6 +757,11 @@ class jv:
                 problems.append("submitted state IDs do not match the manifest")
             problems.extend(f"state changed since extraction: {sid}" for sid, value in states.items()
                             if sid in recorded and cls._digest(value) != recorded[sid])
+        if manifest.get("evidence") is not None:
+            evidence_check = cls.validate_evidence(manifest["evidence"])
+            if not evidence_check["ok"]:
+                problems.extend("evidence dependency: " + problem for problem in evidence_check["problems"])
+                changed.extend("evidence:" + uid for uid in evidence_check.get("stale_records", []))
         coverage = manifest["coverage"]
         return {"ok": not problems, "problems": problems, "digest": digest, "changed": changed,
                 "missing": missing, "complete": coverage["complete"], "coverage": coverage,
@@ -759,6 +864,22 @@ class jv:
                 current = None
             if current != sha:
                 changed.append(rel)
+        stale_units = set()
+        scope = {"incomplete_units": {}, "blocked_items": {}, "complete": True}
+        if plan.get("evidence") is not None:
+            evidence_check = cls.validate_evidence(plan["evidence"])
+            if not evidence_check["ok"]:
+                stale_units = set(evidence_check.get("stale_records", []))
+                if not evidence_check.get("integrity_ok") or not stale_units or "evidence_scope" not in plan:
+                    stale_units = {entry["unit"] for entry in plan["items"].values()}
+                changed.append("evidence_dependencies")
+                scope = _jv_copy.deepcopy(plan.get("evidence_scope", scope))
+                for unit in stale_units:
+                    scope["incomplete_units"].setdefault(unit, []).append("evidence dependency changed")
+                scope["complete"] = False
+            else:
+                scope = _jv_module("workflows").review_scope(
+                    plan["evidence"], Q, plan["items"], evidence_api=_jv_module("evidence"))
         items = {}
         for item_id, entry in plan["items"].items():
             history = state["items"][item_id]["history"]
@@ -766,14 +887,16 @@ class jv:
                 items[item_id] = "stale_rubric"
             elif policy:
                 items[item_id] = "stale_policy"
-            elif entry["excerpt"]["file"] in changed:
+            elif entry["unit"] in stale_units or entry["excerpt"]["file"] in changed:
                 items[item_id] = "stale_source"
+            elif item_id in scope["blocked_items"]:
+                items[item_id] = "missing_evidence"
             elif history and any(isinstance(record, dict) and record.get("file") in changed
                                  for record in history[-1]["evidence"]):
                 items[item_id] = "stale_evidence"
             else:
                 items[item_id] = None
-        return {"rubric": rubric, "policy": policy, "changed": changed, "items": items}
+        return {"rubric": rubric, "policy": policy, "changed": changed, "items": items, "scope": scope}
 
     @classmethod
     def _review_view(cls, bundle, Q, root):
@@ -800,11 +923,14 @@ class jv:
                 "pending": pending, "unresolved": unresolved, "confirmed": listed("confirmed"),
                 "overturned": listed("overturned"), "stale": stale,
                 "drift": {"rubric": drift["rubric"], "policy": drift["policy"], "source": drift["changed"]},
-                "complete": not pending and not unresolved,
+                "complete": not pending and not unresolved and drift["scope"]["complete"],
+                "scope": drift["scope"],
                 "approved_units": sorted(unit for unit, ids in by_unit.items()
-                                         if all(verdicts[item_id] == "confirmed" and not stale.get(item_id)
-                                                for item_id in ids)),
-                "settled": not pending and not unresolved and not stale and not drifted,
+                                         if unit not in drift["scope"]["incomplete_units"]
+                                         and all(verdicts[item_id] == "confirmed" and not stale.get(item_id)
+                                                 for item_id in ids)),
+                "settled": (not pending and not unresolved and not stale and not drifted
+                            and drift["scope"]["complete"]),
                 "grants_authority": False,
                 "manifest_digest": plan["manifest_digest"], "policy_digest": plan["policy_digest"],
                 "qhash": plan["qhash"]}
@@ -851,7 +977,7 @@ class jv:
         return row[question], uncertainty, provenance
 
     @classmethod
-    def review_queue(cls, path, manifest, items, *, Q, policy, root=None, rows=None):
+    def review_queue(cls, path, manifest, items, *, Q, policy, root=None, rows=None, evidence=None):
         """Create the durable review at `path`, or reopen it when its identity is unchanged.
 
         items: item_id -> {"unit": original ID, "claim": text, optional "question": a key of Q}. An item with a
@@ -861,7 +987,16 @@ class jv:
         policy must come from jv.policy(Q, bounds). Every item starts pending. A different review at `path` is refused."""
         if not isinstance(manifest, dict) or manifest.get("schema") != cls.EXTRACTION_SCHEMA:
             raise ValueError("review requires a jevify extraction manifest")
+        if manifest.get("evidence") is not None:
+            if evidence is not None and cls._digest(evidence) != cls._digest(manifest["evidence"]):
+                raise ValueError("review evidence differs from the submission manifest")
+            evidence = manifest["evidence"]
         cls.policy_rule(policy, Q)
+        if evidence is not None:
+            evidence_check = cls.validate_evidence(evidence)
+            if not evidence_check["ok"]:
+                raise ValueError("review requires current evidence: "
+                                 + "; ".join(evidence_check["problems"]))
         if not isinstance(items, dict) or not items:
             raise ValueError("review requires items")
         root_path = _jv_pathlib.Path(manifest["source"]["root"] if root is None else root).resolve()
@@ -870,6 +1005,19 @@ class jv:
             raise ValueError("review requires an extraction that matches current source: "
                              + "; ".join(check["problems"]))
         snapshot = {rel: record["sha256"] for rel, record in manifest["source"]["files"].items()}
+        evidence_sources = {}
+        if evidence is not None:
+            evidence_plan = evidence.get("plan", evidence)
+            for source_id, source in evidence_plan["sources"].items():
+                source_path = _jv_pathlib.Path(source["snapshot"]).resolve()
+                if not source_path.is_relative_to(root_path):
+                    raise ValueError("evidence snapshot is outside the review root")
+                rel = source_path.relative_to(root_path).as_posix()
+                snapshot[rel] = source["sha256"]
+                evidence_sources[source_id] = {"source_id": source_id, "role": source["role"],
+                                               "file": rel, "sha256": source["sha256"],
+                                               "revision": source["revision"],
+                                               "transport_admitted": source["transport_admitted"]}
         indexed = None if rows is None else cls._review_rows(rows, manifest, Q)
         run_digest = None if rows is None else cls._digest(rows.receipt)
         frozen = {}
@@ -886,6 +1034,31 @@ class jv:
                 raise ValueError(f"review item {item_id!r} needs a claim")
             model_verdict, uncertainty, model = cls._review_model(indexed, unit, question, Q)
             record = manifest["units"][unit]
+            if evidence is not None:
+                evidence_plan = evidence.get("plan", evidence)
+                original = evidence_plan["records"].get(unit)
+                if original is None:
+                    raise ValueError("review unit is absent from evidence records")
+                if any(not evidence_plan["sources"][source_id]["transport_admitted"]
+                       for source_id in original["dependencies"]):
+                    raise ValueError("review refuses a secret-bearing evidence record")
+                source = evidence_plan["sources"][original["source_id"]]
+                if snapshot.get(record["file"]) != source["sha256"]:
+                    raise ValueError("review excerpt does not match the evidence original source")
+                source_path = _jv_pathlib.Path(source["snapshot"]).resolve()
+                allowed_paths = {source_path}
+                if source["origin"]["kind"] == "file":
+                    allowed_paths.add((_jv_pathlib.Path(evidence_plan["root"])
+                                       / source["origin"]["path"]).resolve())
+                if (root_path / record["file"]).resolve() not in allowed_paths:
+                    raise ValueError("review excerpt has a different source locator")
+                declared_span = original["facts"].get("source_span")
+                if declared_span is None:
+                    declared_span = {"line": 1, "end_line": len(source_path.read_text(encoding="utf-8").splitlines())}
+                record_end = record.get("end_line") if record.get("end_line") is not None else record.get("line")
+                if (record.get("line") != declared_span.get("line")
+                        or record_end != declared_span.get("end_line")):
+                    raise ValueError("review excerpt differs from the frozen original span")
             start = record.get("line")
             end = record.get("end_line") if record.get("end_line") is not None else start
             if type(start) is not int or type(end) is not int:
@@ -895,11 +1068,18 @@ class jv:
                 raise ValueError(f"review item {item_id!r}: excerpt exceeds {cls.CAP} characters")
             entry = {"unit": unit, "claim": claim, "question": question, "model_verdict": model_verdict,
                      "uncertainty": uncertainty, "model": model, "excerpt": excerpt}
+            if evidence is not None:
+                entry["supporting_sources"] = [evidence_sources[source_id]
+                                               for source_id in original["dependencies"]]
             entry["fingerprint"] = cls._digest({"item": item_id, **entry})
             frozen[item_id] = entry
         identity = {"schema": cls.REVIEW_SCHEMA, "manifest_digest": manifest["digest"], "files": snapshot,
                     "qhash": cls.qhash(Q), "policy_digest": cls._digest(policy), "run_digest": run_digest,
                     "items": frozen}
+        if evidence is not None:
+            identity["evidence"] = _jv_copy.deepcopy(evidence)
+            identity["evidence_scope"] = _jv_module("workflows").review_scope(
+                evidence, Q, frozen, evidence_api=_jv_module("evidence"))
         plan = {**identity, "policy": _jv_copy.deepcopy(policy), "root": str(root_path),
                 "digest": cls._digest(identity)}
         bundle = cls._open_review(path, create=True)
@@ -921,7 +1101,8 @@ class jv:
         try:
             plan, _, state, drift = cls._review_view(bundle, Q, root)
             return [{"item": item_id, "unit": entry["unit"], "claim": entry["claim"],
-                     "excerpt": entry["excerpt"], "model_verdict": entry["model_verdict"],
+                     "excerpt": entry["excerpt"], "supporting_sources": entry.get("supporting_sources", []),
+                     "model_verdict": entry["model_verdict"],
                      "uncertainty": entry["uncertainty"], "model": entry["model"],
                      "fingerprint": entry["fingerprint"], "view": state["items"][item_id]["view"],
                      "verdict": state["items"][item_id]["verdict"], "stale": drift["items"][item_id],
@@ -958,6 +1139,8 @@ class jv:
             f"Source {excerpt['file']}:{excerpt['start']}-{excerpt['end']} "
             f"(file sha256 {excerpt['file_sha256']}):",
             fence, quote, fence,
+            *(["Supporting source registry (open and cite these sources before deciding):",
+               cls._review_show(entry["supporting_sources"])] if entry.get("supporting_sources") else []),
             cls._review_model_line(entry),
             f"Model uncertainty: {cls._review_show(entry['uncertainty'])}",
             f"Earlier decisions on this item: {len(item_state['history'])}.",
@@ -1047,7 +1230,8 @@ class jv:
                     refuse(item, "unknown_item", "the item is not in this review")
                     continue
                 if drift["items"][item] not in (None, "stale_evidence"):
-                    refuse(item, drift["items"][item], "the frozen source, rubric, or policy changed")
+                    refuse(item, drift["items"][item],
+                           "the source, rubric, policy, or required evidence is unavailable or changed")
                     continue
                 current = state["items"][item]
                 last = current["history"][-1]["reviewer"] if current["history"] else None
@@ -1132,8 +1316,14 @@ class jv:
             if record["content_sha256"] != cls._digest(units[uid]):
                 raise ValueError(f"refusing delete_spans: {uid} differs from its extraction record")
         if bundle is None:
+            if manifest.get("evidence") is not None:
+                raise ValueError("evidence-aware deletion requires a source-confirmed review")
             return
         plan, _, state, drift = cls._review_view(bundle, Q, root)
+        if plan.get("evidence") is not None:
+            _jv_module("evidence").assert_deletion_eligible(
+                plan["evidence"], paths=[str(_jv_pathlib.Path(root) / units[uid]["file"])
+                                         for uid in targets])
         if plan["manifest_digest"] != manifest["digest"]:
             raise ValueError("refusing delete_spans: review belongs to a different extraction manifest")
         if drift["rubric"] or drift["policy"] or drift["changed"]:
@@ -2297,6 +2487,8 @@ class jv:
             extraction = None
             if plan["extraction"] is not None:
                 check = cls.validate_extraction(plan["extraction"], ctx["states"], grouping=ctx["grouping"])
+                if plan["extraction"].get("evidence") is not None and not check["ok"]:
+                    raise ValueError("cannot resume stale evidence: " + "; ".join(check["problems"]))
                 extraction = {**plan["extraction_check"],
                               "current": {"ok": check["ok"], "problems": check["problems"]}}
             records = cls._replay(bundle.replay(), ctx)
@@ -2798,7 +2990,7 @@ class jv:
         return items, None, "items"
 
     @classmethod
-    def adopt(cls, source, states, Q, *, intent=None, grouping=None, batch=None):
+    def adopt(cls, source, states, Q, *, intent=None, grouping=None, batch=None, extraction=None):
         """Bind built-in judge_batch() output to its submitted states as receipt-bound rows, so flag(), policy
         rules, review and reports apply to work the host notice ran directly.
 
@@ -2811,6 +3003,7 @@ class jv:
         batch: with drained items, the host batch (or its status() dict) they came from, so the receipt keeps the
         batch ID, cost estimate and host done/total. Drained items keep their served model; batch snapshots do not."""
         ctx = cls._context(states, Q, grouping)
+        extraction_check = cls._check_extraction(extraction, ctx)
         items, status, kind = cls._adopt_items(source)
         if batch is not None:
             if kind == "batch":
@@ -2923,7 +3116,8 @@ class jv:
                        row["selected_model"] for row in rows if row["selected_model"])),
                    "primary_models": dict(_jv_collections.Counter(
                        row["primary_model"] for row in rows if row["primary_model"])),
-                   "resumed": False, "resubmit": False, "bundle": None, "extraction": None, "preflight": None}
+                   "resumed": False, "resubmit": False, "bundle": None,
+                   "extraction": extraction_check, "preflight": None}
         rows.receipt = summary
         for row in rows:
             row["coverage_complete"] = summary["complete"]
@@ -4083,10 +4277,15 @@ class jv:
         per_file = _jv_collections.defaultdict(list)
         for uid in selected & units.keys():
             unit = units[uid]
+            if (unit.get("read_only") is True or unit.get("deletion_eligible") is False
+                    or unit.get("role") in ("original_comment", "external_history", "snapshot")):
+                raise ValueError(f"refusing deletion of imported/read-only evidence: {uid}")
             rel = unit["file"]
             if _jv_pathlib.Path(rel).is_absolute():
                 raise ValueError(f"absolute unit path: {rel}")
             path = (root_path / rel).resolve()
+            if ".jevify-evidence" in path.parts:
+                raise ValueError(f"refusing deletion of immutable evidence artifact: {uid}")
             if not path.is_relative_to(root_path) or (root_path / rel).is_symlink():
                 raise ValueError(f"unit path escapes root or is a symlink: {rel}")
             start, end = unit["line"], unit["end_line"]
