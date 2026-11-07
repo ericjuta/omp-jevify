@@ -1,6 +1,6 @@
 # Clairic source-backed evidence workflows
 
-Implementation checkpoint for v0.5.0: 2026-11-07. Baseline: omp-jevify v0.4.0 (`9fe7062`). All five feature plans are implemented and passed provider-free release checks. The captured reference and repository assessment preserve the pre-implementation design context, not evidence of model quality.
+Implementation checkpoint for v0.5.1: 2026-11-07. Baseline: omp-jevify v0.4.0 (`9fe7062`). All five feature plans are implemented and passed provider-free release checks. The captured reference and repository assessment preserve the pre-implementation design context, not evidence of model quality.
 
 ## Start here
 
@@ -34,6 +34,7 @@ No quality, savings, or review-time improvement is established. New verification
 - All four final CLI demonstrations passed; real-world recommendations remained `inconclusive`.
 - Final focused static reviews cleared the reported transport and evidence/evaluation blockers. These reviews did not run provider calls or establish model quality.
 - Package inventory contains only the 12 intended source/documentation files, excluding Python bytecode caches.
+- v0.5.0 CI exposed a lockfile-format incompatibility with the declared Bun 1.3.14 minimum. The preserved v0.5.0 tag was superseded by v0.5.1: its compatible lock preserves every dependency version/integrity. Frozen install, typecheck, all 29 adapter tests and packaged runtime smoke passed on Bun 1.3.14.
 
 ## Documentation verification
 

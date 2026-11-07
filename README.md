@@ -31,12 +31,12 @@ for preparation, extraction, source review, refresh and explicit history imports
 ## Install
 
 ```sh
-omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.5.0'
+omp plugin install 'git+https://github.com/ericjuta/omp-jevify.git#v0.5.1'
 ```
 
 To replace an existing installation with this version, add `--force` to the command.
 
-The install command pins `v0.5.0` (see [Release 0.5.0](#release-050)). Earlier release
+The install command pins `v0.5.1` (see [Release 0.5.1](#release-051)). Earlier release
 sections retain their historical evidence. The extraction extension requires OMP
 18.10.3–18.x and Bun >=1.3.14; descriptor-confined transport currently requires Linux.
 Deterministic Python preparation remains usable without a provider credential.
@@ -90,7 +90,12 @@ so `comparable` is False across cached and fresh rows and the helper cannot prov
 the same model. `jev-latest` moved from 1.13 to 1.14. Treat unknown provenance as unresolved,
 not as evidence that the primary model answered.
 
-## Release 0.5.0
+## Release 0.5.1
+
+The initial v0.5.0 tag failed CI because Bun 1.3.14 cannot parse Bun 1.4's lockfile format.
+The tag is preserved; v0.5.1 uses the minimum-version-compatible format with all dependency
+versions and integrity hashes unchanged. Frozen installation, TypeScript, all 29 adapter
+tests and the packaged smoke passed under Bun 1.3.14 as well as the development runtime.
 
 All five Clairic implementation proposals are included:
 
