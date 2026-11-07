@@ -2,7 +2,7 @@
 name: jevify
 description: "Source-backed review findings, documentation promises, migration checks, issue/log evidence, explicit OptChat history imports, and repeated independent semantic classification. Also use when the user says jevify/Jev or the host notice fires. Choose deterministic tools or direct reading when sufficient; loading this skill never requires judgment. Not for general summaries, counts or plain edits."
 metadata:
-  version: 0.4.0
+  version: 0.5.0
 ---
 
 # Jevify
