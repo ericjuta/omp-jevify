@@ -127,6 +127,20 @@ class PreparationFixture(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "field"):
             p.preflight(manifest)
 
+    def test_field_naming_no_source_role_of_a_case_is_refused_before_launch(self):
+        manifest, _ = self.fixture()
+        m = p.decode(manifest.read_bytes())
+        control_path = manifest.parent / m["controls"]["path"]
+        controls = p.decode(control_path.read_bytes())
+        controls["fields"]["evidence"]["source_roles"] = ["current_code"]
+        control_path.write_bytes(p.canonical(controls))
+        m["controls"] = p.file_ref(control_path, manifest.parent)
+        for arm in p.ARMS:
+            m["treatments"][arm]["controls_sha256"] = m["controls"]["sha256"]
+        manifest.write_bytes(p.canonical(m))
+        with self.assertRaisesRegex(ValueError, "no source role present"):
+            p.preflight(manifest)
+
     def test_duplicate_aliases_do_not_increase_independent_denominator(self):
         manifest, outcomes = self.fixture("ties")
         self.mutate(manifest, outcomes, lambda m: m["cases"][1].update(unit_id=m["cases"][0]["unit_id"]))
@@ -815,7 +829,8 @@ class PreparationFixture(unittest.TestCase):
         self.assertEqual(records[1]["facts"]["retrieved_passages"], [request["passages"][1]])
         self.assertEqual(sources[1]["subject"], "other-subject")
         self.assertEqual(sources[1]["version"], "v3")
-        self.assertEqual(fields["evidence"]["description"], request["controls"]["fields"]["evidence"]["instructions"])
+        self.assertEqual(fields["evidence"], {"description": request["controls"]["fields"]["evidence"]["instructions"],
+                                              "source_roles": ["original_comment"]})
 
     def test_invalid_record_passage_binding_refuses_before_launch(self):
         manifest, _ = self.fixture()

@@ -968,6 +968,8 @@ recommendation remains `inconclusive`, even when the simulated gate prefers extr
 A live run needs independently adjudicated realistic gold and separate owner approval of
 the exact manifest digest and cap. Default-on transport does not grant that approval.
 Unknown costs remain unknown; a reservation budget is not a guaranteed invoice ceiling.
+Each control field names `source_roles`, the roles of the sources that can hold its
+answer; a field asked of several sources can end `ambiguous` when each returns a span.
 Each finished attempt charges the larger of its reservation and its reported plus
 catalog-estimated cost. `budget.max_incomplete_attempts` freezes how many attempts may
 fail without stopping the run; a failed attempt is never retried and is scored as

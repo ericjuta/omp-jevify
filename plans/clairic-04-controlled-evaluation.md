@@ -14,6 +14,8 @@ Users can determine whether Clairic adds value over the exact same deterministic
 - [x] (2026-11-14) Froze 11 owner-adjudicated realistic cases (7 valid, 4 invalid findings), thresholds, artifacts and provider-free preflight as manifest `0b6374d2c164b45b75fa4e71bcd5306c5694588919def653957bebdff774efc0`.
 - [x] (2026-11-14) Owner approved that exact digest with a $15 best-effort ceiling and 88 attempts.
 - [x] (2026-11-14) Executed the approved run once. It stopped under its frozen rule after 34 of 88 attempts; the recommendation is `inconclusive` and nothing is adopted. No threshold was changed.
+- [x] (2026-11-14) Repaired the runner faults the stopped run exposed: refused replies are kept, a frozen tolerance lets a failed attempt fail only its own cell, the allocation counts catalog estimates, and fields name the source roles they are asked of.
+- [x] (2026-11-14) Ran two owner-approved design probes (4 requests on a public synthetic pair, 33 on the 11 exposed cases). Clairic found the anchored line in at most 2 of 11 real cases. No second comparison is planned for this field.
 
 ## Context and Orientation
 
@@ -96,7 +98,24 @@ What this shows:
 - A short, direct question found the right line. The same finding delivered through the adapter's JSON record context gave a confident wrong span. The record context appears not to steer the answer.
 - Returned spans are fragments, not whole lines. Adoption maps a span to its enclosing complete line, so a gold key made of whole lines can still be matched.
 - The provider again reported cost `0`; cost remains unknown.
-- The stopped run's design fault is therefore where the finding was put, not whether it was sent.
+- At this point the stopped run's fault looked like where the finding was put, not whether it was sent. The next entry revises that.
+
+2026-11-14, owner-approved development check on the 11 exposed cases (three plans of 11 requests each, $1 cap, digests `bbee2866…1f0a` title, `139302ef…4bd1` full comment, `3034e561…dafc` adapter record context; installed v0.5.1; case text kept outside this repository). These cases were already spent as held-out gold, so tuning on them costs nothing. Each request asked the code source alone for the line the finding is about, and the answer was compared with the lines the review thread was anchored to on GitHub (80-line code windows, one to five anchor lines each):
+
+| Finding supplied as | Spans returned | On an anchor line | Within 3 lines |
+|---|---|---|---|
+| its title, in the field question | 11 of 11 | 2 | 5 |
+| the whole comment, in the field question | 11 of 11 | 1 | 3 |
+| adapter record context (the stopped run's shape) | 11 of 11 | 0 | 1 |
+
+What this shows:
+
+- Clairic always returned a span and almost always the wrong one. The better phrasing from the synthetic probe did not carry over to real findings. Locating the line a review finding concerns is not something this extraction step does, in any phrasing tried.
+- This is development evidence on 11 exposed cases with one request each, not a measurement, and it says nothing about fields that restate words present in the source (the wire smoke's kind).
+- The stopped run's zero candidates need a third explanation, because the same record-context request returned a span in all 11 cases here. The stopped run asked the field of both sources. If Clairic returned a span from the comment as well as from the code, the adapter's rule (two different admissible occurrences are `ambiguous`) would count no candidate. This is the likely cause and it is **not confirmed**: the stopped run's result artifacts were not kept, and a two-request confirmation (plan `a20f59db…9e3a`, public synthetic pair) was offered to the owner and not approved, so it was not sent.
+- Decision: no second comparison for this field. It would spend fresh adjudicated gold measuring a step that already fails on development cases. Deterministic preparation stays the default.
+
+Runner repair from this finding (provider-free, 56 preparation tests pass): every control field must now name `source_roles`, the roles of the sources that can hold its answer. Arms B and C pass them to preparation, so a field is no longer asked of a source that cannot contain it. A field whose roles match no source in a case is refused before launch.
 
 
 ## Decision Log
@@ -109,4 +128,6 @@ What this shows:
 
 The executable controlled runner is implemented. The final repaired Python suite passed 575 tests, and the focused static rereview cleared all six remaining release blockers. Four final CLI demonstrations exited successfully: simulated improvement selected extraction, worsening/tie selected deterministic preparation, and missing results withheld the software gate. All four top-level real-world recommendations remained `inconclusive`. These were injected synthetic software checks, not experiments. Independent realistic gold and owner manifest/cap approval remain prerequisites for live measurement. No cost, quality, review-burden or savings improvement is claimed.
 
-The one approved live comparison (2026-11-14) ended `inconclusive` after 34 of 88 attempts. It produced no evidence for or against extraction: Clairic abstained on every case, for a reason not yet established (the other source was present in its instructions). Deterministic preparation stays the default recommendation, and no cost, quality, review-burden or savings improvement is claimed.
+The one approved live comparison (2026-11-14) ended `inconclusive` after 34 of 88 attempts. It produced no evidence for or against extraction: no extraction candidate reached arm C in any attempt. The likely cause, not confirmed, is that the field was asked of both sources and two differing answers were recorded as ambiguous.
+
+Two later owner-approved probes (37 requests) showed that Clairic always returns a span for "the code line this review finding is about" and that the span was on a thread-anchored line in at most 2 of 11 exposed real cases. A second comparison on this field is therefore not planned. Deterministic preparation stays the default recommendation, and no cost, quality, review-burden or savings improvement is claimed. Whether Clairic helps on fields whose answer restates words in the source remains untested beyond the one-request wire smoke.

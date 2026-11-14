@@ -312,9 +312,13 @@ def load_manifest(path, *, started_at=None):
              and len(set(judge["fallback_models"])) == len(judge["fallback_models"]), "explicit judge role and fallback policy required")
     _require(judge["thinking"] == "off", "supported host judgment disables reasoning; judge thinking must be off")
     for field in controls["fields"].values():
-        _object(field, ("instructions", "null_threshold"), "field")
+        _object(field, ("instructions", "null_threshold", "source_roles"), "field")
         _require(_text(field["instructions"]) and field["null_threshold"] == .5,
                  "field instructions and adapter's frozen 0.5 null threshold required")
+        # Asked of every source, a span model answers from each and the adapter reports the field ambiguous.
+        roles = field["source_roles"]
+        _require(isinstance(roles, list) and bool(roles) and all(_text(role) for role in roles)
+                 and len(set(roles)) == len(roles), "each field must name the source roles that can hold its answer")
     _object(m["treatments"], ARMS, "treatments")
     for arm, treatment in m["treatments"].items():
         _object(treatment, ("strategy", "preparation", "extraction", "controls_sha256"), "treatment")
@@ -366,6 +370,8 @@ def load_manifest(path, *, started_at=None):
             _require(_text(sid) and _text(source["revision"]) and _text(source["role"])
                      and all(source[key] is None or _text(source[key]) for key in ("subject", "version")), "source identity required")
             sources[sid] = {**source, "text": _file(root, source["file"]).decode("utf-8")}
+        _require(all({s["role"] for s in sources.values()} & set(field["source_roles"]) for field in controls["fields"].values()),
+                 "a field names no source role present in this case")
         inventory = _inventory(decode(_file(root, case["inventory"])))
         _object(case["retrieval"], ARMS, "retrieval")
         _require(case["retrieval"]["B"]["sha256"] == case["retrieval"]["C"]["sha256"], "B/C retrieved passages differ")
@@ -1089,7 +1095,8 @@ class HostExecutor:
                     "subject": source["subject"], "version": source["version"],
                     "snapshot_identity": source["file"]["sha256"], "classification": "private"}
                    for sid, source in request["sources"].items()]
-        fields = {name: {"description": value["instructions"]} for name, value in request["controls"]["fields"].items()}
+        fields = {name: {"description": value["instructions"], "source_roles": value["source_roles"]}
+                  for name, value in request["controls"]["fields"].items()}
         records = [{"id": r["id"], "source_id": r["source_id"], "required_fields": list(fields),
                     "required_questions": r["required_questions"], "dependencies": r["dependencies"],
                     "subject": r["subject"], "version": r["revision"],
@@ -1513,7 +1520,8 @@ def synthetic_fixture(root, scenario="improves"):
         return file_ref(target, root)
     controls = {"rubric": "Decide whether the exact versioned claim is supported, retaining conditions, exceptions and negation. "
                             "Use null when a required base/contract is absent. Read-only recommendations only.",
-                "fields": {"evidence": {"instructions": "Return the exact qualified subject/version occurrence, never its neighbor.", "null_threshold": .5}},
+                "fields": {"evidence": {"instructions": "Return the exact qualified subject/version occurrence, never its neighbor.",
+                                        "null_threshold": .5, "source_roles": ["original_comment"]}},
                 "judge": {"model": "fixture-judge", "thinking": "off", "fallback_models": [], "rubric_revision": "software-example/1"},
                 "fallback": "retain deterministic sources; unresolved on missing evidence",
                 "completion": "answer every required question or explicitly abstain; never omit a record"}

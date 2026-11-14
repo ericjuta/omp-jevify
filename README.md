@@ -137,9 +137,15 @@ One owner-approved controlled comparison ran the same day on 11 owner-adjudicate
 realistic review cases (manifest `0b6374d2…efc0`, case text kept outside this repository).
 It stopped under its frozen rule after 34 of 88 attempts, when one host reply was not
 valid JSON, and its recommendation is **inconclusive**. Clairic returned no candidates in
-any of the 10 extraction attempts. Each request carried the other source in its
-instructions, so the cause of the abstentions is not yet known. The run therefore gives no
-evidence for or against extraction. Details are in
+any of the 10 extraction attempts; the likely cause, not confirmed, is that the field was
+asked of both sources and two differing answers were recorded as ambiguous. The run
+therefore gives no evidence for or against extraction.
+
+Two owner-approved design probes followed (37 requests). Asked for the code line a review
+finding is about, Clairic returned a span every time, and on the 11 exposed real cases the
+span was on a line the review thread was anchored to in at most 2 of 11. No second
+comparison is planned for that field, and deterministic preparation stays the default.
+Details are in
 [`plans/clairic-04-controlled-evaluation.md`](plans/clairic-04-controlled-evaluation.md).
 No accuracy, savings or review-time improvement is claimed.
 Provider-reported usage is not a settled invoice; unknown costs remain unknown.
