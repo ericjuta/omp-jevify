@@ -1092,13 +1092,18 @@ class HostExecutor:
                                     "On failure preserve deterministic evidence. Do not treat a candidate span as a label.")
             elif arm == "D":
                 preparation = "Read request.json and review sources directly, without scripts, judgment helpers or extraction."
+            if arm != "D":
+                preparation += (" Decide every required question with the host judge: in the eval tool call judge() once per "
+                                "record and question, giving it controls.rubric and that record's evidence, and report the "
+                                "judge's label as the answer. Do not answer a question without a judge call.")
             prompt = preparation + (
                 " Apply controls.rubric, controls.judge, controls.fallback and controls.completion exactly. "
                 "Return one JSON object with records and processed_passages. Each record has exactly id, subject, revision, "
                 "qualifications (strings), answers (question-to-value map, null for an explicit abstention), and occurrences "
                 "(objects with source_id, revision, start, end, quote; start/end are Unicode codepoint offsets). "
                 "Preserve every inventory ID and required question; do not invent answers. processed_passages lists zero-based "
-                "request.passages indices actually reviewed. No cost, model provenance or gold may be invented.")
+                "request.passages indices actually reviewed. No cost, model provenance or gold may be invented. "
+                "The final reply is that JSON object alone: no code fence and no other text.")
             argv = self.argv(request, workspace, session, config, prompt)
             _exclusive(directory / "launch.json", canonical({"argv": argv, "candidate": request["candidate"],
                        "host_observer_sha256": sha(HOST_OBSERVER.encode())}))
@@ -1214,7 +1219,7 @@ class HostExecutor:
                     _exclusive(directory / "captured-receipts.json", canonical(receipts))
             invoked = arm == "C" and len(extraction_results) == 1 and extraction_results[0]["published"]
             _require(proc.returncode == 0 and ended and not malformed and bool(answers), "host execution incomplete")
-            answer = decode(answers[-1])
+            answer = decode(self.answer_json(answers[-1]))
             _object(answer, ("records", "processed_passages"), "host answer")
             _require(config.read_text() == configuration, "frozen host judge configuration changed")
             judge = {"configuration": request["controls"]["judge"], "models": sorted(judge_models)} if judge_models else {"mode": "direct_no_judge"} if arm == "D" else None
@@ -1234,6 +1239,18 @@ class HostExecutor:
                                  "judge": judge, "candidate": request["candidate"] if invoked else None,
                                  "extraction_invoked": invoked, "extraction": extraction},
                     **answer, "receipts": receipts, "human_review": None}
+
+    @staticmethod
+    def answer_json(text):
+        """A bare JSON object, or the body of one leading fenced block; anything else is refused."""
+        text = text.strip()
+        if text.startswith("```"):
+            head, fence, _ = text[3:].partition("```")
+            _require(bool(fence), "host answer has an unterminated code fence")
+            language, newline, body = head.partition("\n")
+            _require(bool(newline) and language.strip() in ("", "json"), "host answer fence is not JSON")
+            text = body.strip()
+        return text.encode()
 
     @staticmethod
     def capture_observation(event, directory, index):
