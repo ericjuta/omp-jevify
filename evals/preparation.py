@@ -1329,7 +1329,9 @@ class HostExecutor:
         receipts = []
         for index, msg in enumerate(messages):
             cost = shared.usage_reported_cost(msg.get("usage"))
-            receipts.append({"id": f"outer:{index}", "stage": "completion", "status": "complete" if msg.get("stopReason") == "stop" else "failed",
+            # A tool-use turn is a finished provider completion, not a failure.
+            receipts.append({"id": f"outer:{index}", "stage": "completion",
+                             "status": "complete" if msg.get("stopReason") in ("stop", "toolUse") else "failed",
                              "cost_usd": str(cost) if cost is not None else None, "cost_evidence": "catalog_estimate",
                              "input_tokens": shared.usage_tokens(msg.get("usage"))["input"], "provider_passes": None})
         # These top-level frames rely on the trusted host/process event-stream boundary,

@@ -857,7 +857,11 @@ class PreparationFixture(unittest.TestCase):
                                "thinking": "high", "usage": [], "final": False}
                 events = [observation] if source == "observer_initial" else [{"type": "thinking_level_changed", "thinkingLevel": "high"}]
                 answer = {key: expected[key] for key in ("records", "processed_passages")}
-                events += [{"type": "message_end", "message": {"role": "assistant", "model": "fixture-model", "stopReason": "stop",
+                events += [{"type": "message_end", "message": {"role": "assistant", "model": "fixture-model", "stopReason": "toolUse",
+                            "content": [], "usage": {"input": 3}}},
+                           {"type": "message_end", "message": {"role": "assistant", "model": "fixture-model", "stopReason": "length",
+                            "content": [], "usage": {"input": 3}}},
+                           {"type": "message_end", "message": {"role": "assistant", "model": "fixture-model", "stopReason": "stop",
                             "content": [{"type": "text", "text": p.canonical(answer).decode()}], "usage": {"input": 11}}}]
                 if source == "observer_initial":
                     events.append({**observation, "final": True})
@@ -874,6 +878,8 @@ class PreparationFixture(unittest.TestCase):
                     result = p.HostExecutor(bundle)(request, directory)
                 self.assertEqual(result["observed"]["thinking"], "high")
                 self.assertTrue(p.validate_outcome(result, request)["provenance_complete"])
+                self.assertEqual([r["status"] for r in result["receipts"] if r["stage"] == "completion"],
+                                 ["complete", "failed", "complete"])
 
     def test_keyboard_interrupt_drains_late_receipt_and_ignores_forged_disk_usage(self):
         manifest, _ = self.fixture()
