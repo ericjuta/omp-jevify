@@ -81,6 +81,24 @@ Cost: the catalog estimate for the 34 attempts was $2.82, with Clairic cost unkn
 - The budget key `stop_on_incomplete` is replaced by a frozen `max_incomplete_attempts`. An incomplete attempt is still never retried and still charges its reservation. Up to the frozen number, it fails only its own cell: the report scores it as answering nothing (every question unresolved, none correct) and marks it `failed`, so a failing arm is not flattered by dropping its failures. One more failure than the tolerance stops the run as before; `0` keeps the old behaviour. An interruption always stops the run.
 - The allocation now charges each finished attempt the larger of its reservation and its provider-reported plus catalog-estimated cost. Before, catalog estimates counted as zero, so the ceiling could not bind on stock host completions. Unknown-cost receipts, such as Clairic's reported `0`, still add nothing beyond the reservation, so the reservation must be sized to cover them. This remains a best-effort allocation, not an invoice cap: the last admitted attempt can overshoot by its own cost.
 
+2026-11-14, owner-approved live check (plan digest `44857271b9504197b2899d25a5f679e627453f516517b3cd4d3a4c8532a6d5ee`, $1 cap, four requests on the public synthetic pair in `.scratch/clairic-context-check/`, installed v0.5.1, 0.97 s in total). Each request asked for the code line a made-up review finding is about; the correct line is the `for` loop header. Adoption and validation passed. One case, so this is a design probe, not a measurement:
+
+| Request | Finding supplied as | Returned span | Right line |
+|---|---|---|---|
+| v1 | record context, comment and code passages (the stopped run's shape) | `export async function fetchWithRetry` | no |
+| v2 | record context, comment passage only | `retry.ts` | no |
+| v3 | written into the field question | `for (let i = 0; i <= attempts` | yes |
+| v4 | not needed: a direct question about the loop | `for (let i = 0; i <= attempts; i+` | yes |
+
+What this shows:
+
+- Clairic does return code spans, so the stopped run's abstentions were not a wire or adapter failure. All four answers took about 0.2 s and reported zero output tokens, which fits a span-selection model more than a generative one. Zero output tokens does not mean abstention; the earlier reading of it was wrong.
+- A short, direct question found the right line. The same finding delivered through the adapter's JSON record context gave a confident wrong span. The record context appears not to steer the answer.
+- Returned spans are fragments, not whole lines. Adoption maps a span to its enclosing complete line, so a gold key made of whole lines can still be matched.
+- The provider again reported cost `0`; cost remains unknown.
+- The stopped run's design fault is therefore where the finding was put, not whether it was sent.
+
+
 ## Decision Log
 
 2026-11-07, superseding owner decision: Clairic defaults on for selected public/private non-secret source, with explicit opt-out and deterministic fallback, using host-resolved credentials including host environment-key fallback. Implementation and shipping are authorized. Exact manifest digest and cap approval remain mandatory before live experiments.
