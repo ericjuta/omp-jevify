@@ -11,9 +11,9 @@ Users can determine whether Clairic adds value over the exact same deterministic
 - [x] (2026-11-07) Identified that existing pilot gates compare methods, not preparation treatments.
 - [x] (2026-11-07) Implemented the preregistration contract, independent-case admission and fixed C-versus-B primary contrast.
 - [x] (2026-11-07) Implemented `evals/preparation.py` freeze/preflight/run/report and four provider-free executable demonstration scenarios without changing old strategy gates.
-- [ ] Freeze independently adjudicated cases, thresholds, artifacts and provider-free preflight.
-- [ ] Obtain owner approval of the exact manifest digest and total spend cap before any live call.
-- [ ] Execute the approved run, adjudicate outcomes and record adoption/withholding without post-hoc threshold changes.
+- [x] (2026-11-14) Froze 11 owner-adjudicated realistic cases (7 valid, 4 invalid findings), thresholds, artifacts and provider-free preflight as manifest `0b6374d2c164b45b75fa4e71bcd5306c5694588919def653957bebdff774efc0`.
+- [x] (2026-11-14) Owner approved that exact digest with a $15 best-effort ceiling and 88 attempts.
+- [x] (2026-11-14) Executed the approved run once. It stopped under its frozen rule after 34 of 88 attempts; the recommendation is `inconclusive` and nothing is adopted. No threshold was changed.
 
 ## Context and Orientation
 
@@ -67,6 +67,12 @@ Final review identified that model-writable session journals cannot attest judge
 
 2026-11-14, owner-approved rehearsal of arms A, C and D (one attempt each, same public synthetic case, outside any manifest): all three completed with required answers and provenance. In arm C the host itself called `jevify_extract` twice and the observed extraction model was `cloudflare/clairic-20261029`; both extraction receipts carry unknown cost. Arm D ran without a judge, as designed. Catalog estimates were about $0.16 (A), $0.19 (C) and $0.12 (D). Each included about $0.10 for an uncached first prompt, because arms use different tool sets and do not share a prompt cache; a repeated arm-B attempt had paid about $0.02 for the same turn. The expected total for 88 attempts is therefore about $7 to $8 when same-arm attempts reuse the cache, and about $14.5 if they never do. Receipts had labelled successful tool-use turns `failed`; they are now `complete`, and only other stop reasons are `failed`.
 
+2026-11-14, approved live run (manifest `0b6374d2…efc0`, case text kept outside this repository): 33 attempts completed, then one arm-C attempt ended with a host reply that was not a JSON object. With no retries and stop-on-incomplete frozen, the run stopped at attempt 34. The `complete_outcomes` gate withholds the verdict, and the 11 cases are now exposed, so they cannot serve as fresh held-out gold again. The runner does not keep the unparsable reply, so its content is unknown.
+
+The partial outcomes are descriptive only (first repetition, unbalanced across arms, no interval): correct decisions were 4 of 7 in A, 4 of 9 in B, 1 of 9 in C and 1 of 8 in D. In all 10 arm-C attempts, and in the earlier arm-C rehearsal, Clairic completed both requests and returned zero candidates. The frozen field asked for the code line that a review comment is about. Request sizes indicate that each source went to Clairic in its own request, so the code was read without the comment and the comment without the code; abstaining was then the correct behaviour. Under the frozen fallback (an absent extraction is never replaced by a guess) arm C left 7 of 9 decisions unresolved. This design therefore could not have shown an extraction benefit, and the rehearsal should have been checked for a non-zero candidate count before freezing. A fair test needs fields answerable from one source, or record context that carries the other source.
+
+Cost: the catalog estimate for the 34 attempts was $2.82, with Clairic cost unknown (20 requests, each reporting `0`). The runner's ceiling counts only provider-reported cost, so it charged the $0.05 reservation per attempt ($1.70) and would not have stopped the run at $15; the estimate was checked by hand against the approved ceiling.
+
 ## Decision Log
 
 2026-11-07, superseding owner decision: Clairic defaults on for selected public/private non-secret source, with explicit opt-out and deterministic fallback, using host-resolved credentials including host environment-key fallback. Implementation and shipping are authorized. Exact manifest digest and cap approval remain mandatory before live experiments.
@@ -76,3 +82,5 @@ Final review identified that model-writable session journals cannot attest judge
 ## Outcomes & Retrospective
 
 The executable controlled runner is implemented. The final repaired Python suite passed 575 tests, and the focused static rereview cleared all six remaining release blockers. Four final CLI demonstrations exited successfully: simulated improvement selected extraction, worsening/tie selected deterministic preparation, and missing results withheld the software gate. All four top-level real-world recommendations remained `inconclusive`. These were injected synthetic software checks, not experiments. Independent realistic gold and owner manifest/cap approval remain prerequisites for live measurement. No cost, quality, review-burden or savings improvement is claimed.
+
+The one approved live comparison (2026-11-14) ended `inconclusive` after 34 of 88 attempts. It produced no evidence for or against extraction: Clairic abstained on every case because the frozen field needed two sources at once. Deterministic preparation stays the default recommendation, and no cost, quality, review-burden or savings improvement is claimed.

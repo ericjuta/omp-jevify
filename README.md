@@ -131,9 +131,17 @@ plugin (plan digest `6f16cbb7…2c35`, one request, 259 bytes of public syntheti
 characters (code points 136–186 mapped to bytes 140–190), one correct abstention for an
 absent field, and Python adoption and validation passed. The provider reported cost `0`
 with three passes and 1,468 input tokens, so the cost is **unknown**, not free. One
-request shows wire compatibility, not accuracy. Controlled live comparisons still require
-independently adjudicated realistic gold and their own approval. No accuracy, savings or
-review-time improvement is claimed.
+request shows wire compatibility, not accuracy.
+
+One owner-approved controlled comparison ran the same day on 11 owner-adjudicated
+realistic review cases (manifest `0b6374d2…efc0`, case text kept outside this repository).
+It stopped under its frozen rule after 34 of 88 attempts, when one host reply was not
+valid JSON, and its recommendation is **inconclusive**. Clairic returned no candidates in
+any of the 10 extraction attempts: the frozen field needed the review comment and the code
+together, and each source was sent on its own. The run therefore gives no evidence for or
+against extraction. Details are in
+[`plans/clairic-04-controlled-evaluation.md`](plans/clairic-04-controlled-evaluation.md).
+No accuracy, savings or review-time improvement is claimed.
 Provider-reported usage is not a settled invoice; unknown costs remain unknown.
 
 ## Release 0.4.0
