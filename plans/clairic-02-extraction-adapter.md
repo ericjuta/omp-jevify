@@ -13,7 +13,7 @@ An agent prepares evidence in Python, invokes one optional OMP tool to extract v
 - [x] (2026-11-07) Implemented the installed Python/extension artifact bridge against the observed OMP SDK.
 - [x] (2026-11-07) Implemented default-on extraction with opt-out, host-only credentials, strict publication/receipt validation and explicit zero-transmission recovery.
 - [x] (2026-11-07) Final adapter suite: 29 tests passed, including distinct same-source record contexts and bounded request refusal. Packaged fresh-process SDK/Python smoke passed against loopback, including four real controller receipt captures; five loopback requests and zero outbound provider requests.
-- [ ] Run a live installed-plugin proof only under separately approved manifest and cap.
+- [x] (2026-11-14) Ran one owner-approved live installed-plugin proof: plan digest `6f16cbb7…2c35`, cap $0.25, one request, complete on `cloudflare/clairic-20261029` in 1.9 s; two exact occurrences (one after non-ASCII text), one abstention, adoption and validation passed. Provider reported cost `0` with 3 passes and 1,468 input tokens: cost unknown. Wire compatibility only; no quality claim.
 
 ## Context and Orientation
 

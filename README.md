@@ -124,9 +124,16 @@ controller receipts and four real SDK observer lifecycle frames. It exercised in
 fixed thinking, in-memory usage accounting, Unicode/CRLF, null abstention, opt-out,
 zero-request recovery, unsafe paths and interruption with **zero outbound provider requests**.
 
-No new live Clairic/Jev experiment ran. A real-provider wire smoke still requires exact
-manifest/cap approval; controlled live comparisons additionally require independently
-adjudicated realistic gold. No accuracy, savings or review-time improvement is claimed.
+One owner-approved real-provider wire smoke ran on 2026-11-14 with the installed v0.5.1
+plugin (plan digest `6f16cbb7…2c35`, one request, 259 bytes of public synthetic source in
+`.scratch/clairic-live-smoke/source.md`). It completed in 1.9 s on
+`cloudflare/clairic-20261029`: two exact occurrences, including one after non-ASCII
+characters (code points 136–186 mapped to bytes 140–190), one correct abstention for an
+absent field, and Python adoption and validation passed. The provider reported cost `0`
+with three passes and 1,468 input tokens, so the cost is **unknown**, not free. One
+request shows wire compatibility, not accuracy. Controlled live comparisons still require
+independently adjudicated realistic gold and their own approval. No accuracy, savings or
+review-time improvement is claimed.
 Provider-reported usage is not a settled invoice; unknown costs remain unknown.
 
 ## Release 0.4.0
