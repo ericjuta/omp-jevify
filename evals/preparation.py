@@ -336,11 +336,12 @@ def load_manifest(path, *, started_at=None):
              and d["order"] == "seeded_shuffled_blocks" and type(d["max_retries"]) is int and d["max_retries"] == 0,
              "frozen repeated randomized design required")
     budget = m["budget"]
-    _object(budget, ("max_attempts", "max_allocation_usd", "reservation_per_attempt_usd", "policy", "uncertain_charge", "stop_on_incomplete"), "budget")
+    _object(budget, ("max_attempts", "max_allocation_usd", "reservation_per_attempt_usd", "policy", "uncertain_charge", "max_incomplete_attempts"), "budget")
     _require(type(budget["max_attempts"]) is int and budget["max_attempts"] > 0
              and _money(budget["max_allocation_usd"]) > 0 and _money(budget["reservation_per_attempt_usd"]) > 0
              and budget["policy"] == "best_effort_reservation" and budget["uncertain_charge"] == "full_reservation"
-             and budget["stop_on_incomplete"] is True, "conservative best-effort budget required")
+             and type(budget["max_incomplete_attempts"]) is int and budget["max_incomplete_attempts"] >= 0,
+             "conservative best-effort budget with a frozen incomplete-attempt tolerance required")
     _require(isinstance(m["cases"], list) and bool(m["cases"]), "cases required")
     cases, ids = [], set()
     for case in m["cases"]:
@@ -772,6 +773,16 @@ def _cost_required(manifest):
     return manifest["thresholds"]["primary"]["metric"] == "total_cost_usd"
 
 
+def _charge(accounting, reserved):
+    """Allocation charge for one finished attempt: never below its reservation.
+
+    Catalog estimates count: stock host completions report no provider cost, so a
+    ceiling on reported cost alone would never bind. Unknown-cost receipts add nothing
+    beyond the reservation, which is why the reservation must cover them.
+    """
+    return max(reserved, _money(accounting["reported_subtotal_usd"]) + _money(accounting["catalog_estimate_subtotal_usd"]))
+
+
 def _run_admitted_experiment(path, output, bundle, executor, approval_sha, live, resume, started):
     m = bundle["manifest"]
     cost_required = _cost_required(m)
@@ -796,10 +807,13 @@ def _run_admitted_experiment(path, output, bundle, executor, approval_sha, live,
     finishes = {r["attempt_id"]: r for r in records if r["event"] == "finish"}
     unresolved_reservations = [r for r in reservations if r["attempt_id"] not in finishes]
     stop = "uncertain_prior_attempt" if unresolved_reservations else None
-    if any(not r["complete"] for r in finishes.values()):
+    # A frozen tolerance lets a failed attempt cost its own cell, not the experiment.
+    tolerance = m["budget"]["max_incomplete_attempts"]
+    incomplete = sum(not r["complete"] for r in finishes.values())
+    if incomplete > tolerance:
         stop = "incomplete_prior_evidence"
     reserved = _money(m["budget"]["reservation_per_attempt_usd"])
-    spent = sum((max(reserved, _money(finishes[r["attempt_id"]]["accounting"]["reported_subtotal_usd"]))
+    spent = sum((_charge(finishes[r["attempt_id"]]["accounting"], reserved)
                  if r["attempt_id"] in finishes else reserved for r in reservations), Decimal(0))
     count = len(reservations)
     finished_cells = {(r["case"], r["arm"], r["rep"]) for r in reservations if r["attempt_id"] in finishes}
@@ -846,18 +860,24 @@ def _run_admitted_experiment(path, output, bundle, executor, approval_sha, live,
                 finish = {"event": "finish", "attempt_id": attempt_id, "outcome_sha256": None,
                           "latency_seconds": time.monotonic() - begin, "accounting": accounting,
                           "complete": False, "validation": None, "error": type(error).__name__, "artifacts": artifact_hashes(directory)}
-                spent += max(Decimal(0), _money(accounting["reported_subtotal_usd"]) - reserved)
+                spent += _charge(accounting, reserved) - reserved
                 previous = _journal(ledger, finish, previous)
-                stop = "interrupted" if isinstance(error, (KeyboardInterrupt, SystemExit)) else "incomplete_evidence"
+                incomplete += 1
+                if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                    stop = "interrupted"
+                elif incomplete > tolerance:
+                    stop = "incomplete_evidence"
                 break
             previous = _journal(ledger, finish, previous)
-            spent += max(Decimal(0), _money(accounting["reported_subtotal_usd"]) - reserved)
+            spent += _charge(accounting, reserved) - reserved
             if not complete:
-                stop = "incomplete_evidence"
+                incomplete += 1
+                if incomplete > tolerance:
+                    stop = "incomplete_evidence"
             # No automatic retry of billed/uncertain attempts; retry allowance is a ceiling, not permission to replay.
             break
     previous = _journal(ledger, {"event": "stop", "reason": stop or "schedule_complete", "attempts": count,
-                                "allocation_consumed_usd": str(spent)}, previous)
+                                "incomplete_attempts": incomplete, "allocation_consumed_usd": str(spent)}, previous)
     result = report(path, output)
     _exclusive(output / "report.json", canonical(result))
     return result
@@ -900,6 +920,16 @@ def report(path, output):
             _require(r["event"] == "stop", "unknown ledger event")
     cases = {c["manifest"]["id"]: c for c in bundle["cases"]}
     results, observed, complete = [], {a: [] for a in ARMS}, True
+    failed = {a: 0 for a in ARMS}
+    protocol = m["thresholds"]["human_time_protocol"]
+
+    def unanswered(aid, reserve, finish):
+        # Frozen rule: an incomplete attempt is never retried or dropped; it answers nothing.
+        empty = {"identity": {"arm": reserve["arm"]}, "records": [], "processed_passages": [], "human_review": None}
+        scored = score(cases[reserve["case"]], empty, finish["latency_seconds"], finish["accounting"], protocol)
+        failed[reserve["arm"]] += 1
+        results.append({"case": reserve["case"], "arm": reserve["arm"], "rep": reserve["rep"], "attempt_id": aid,
+                        "failed": True, **scored})
     for aid, reserve in reservations.items():
         expected = request_for(bundle, reserve["case"], reserve["arm"], reserve["rep"], reserve["attempt"])
         _require(aid == sha(canonical(expected["identity"])) and reserve["attempt"] == 0
@@ -909,22 +939,32 @@ def report(path, output):
         finish = finishes.get(aid)
         if finish is not None:
             _require(finish["artifacts"] == artifact_hashes(output / aid), "outcome artifact changed or attempt artifacts changed")
-        if finish is None or finish["outcome_sha256"] is None:
-            if finish is not None:
-                _require(account(decode((output / aid / "failed-receipts.json").read_bytes())) == finish["accounting"], "failed attempt accounting changed")
+        if finish is None:
             complete = False
+            continue
+        if finish["outcome_sha256"] is None:
+            _require(account(decode((output / aid / "failed-receipts.json").read_bytes())) == finish["accounting"], "failed attempt accounting changed")
+            unanswered(aid, reserve, finish)
             continue
         outcome = decode((output / aid / "outcome.json").read_bytes())
         _require(digest(outcome) == finish["outcome_sha256"], "outcome artifact changed")
         validation = validate_outcome(outcome, request)
         _require(validation == finish["validation"] and validation["accounting"] == finish["accounting"], "ledger accounting changed")
-        complete = complete and finish["complete"] and validation["required_complete"] and validation["provenance_complete"]
-        scored = score(cases[reserve["case"]], outcome, finish["latency_seconds"], validation["accounting"], m["thresholds"]["human_time_protocol"])
-        results.append({"case": reserve["case"], "arm": reserve["arm"], "rep": reserve["rep"], "attempt_id": aid, **scored})
+        _require(finish["complete"] == bool(validation["required_complete"] and validation["provenance_complete"]
+                                            and (validation["accounting"]["cost_complete"] or not _cost_required(m))),
+                 "ledger completeness changed")
+        if not finish["complete"]:
+            unanswered(aid, reserve, finish)
+            continue
+        scored = score(cases[reserve["case"]], outcome, finish["latency_seconds"], validation["accounting"], protocol)
+        results.append({"case": reserve["case"], "arm": reserve["arm"], "rep": reserve["rep"], "attempt_id": aid,
+                        "failed": False, **scored})
         observed[reserve["arm"]].append(outcome["observed"])
     cells = {(r["case"], r["arm"], r["rep"]) for r in results}
     expected_cells = set(schedule(bundle))
-    complete = complete and cells == expected_cells and len(results) == len(expected_cells)
+    incomplete = sum(failed.values())
+    complete = complete and cells == expected_cells and len(results) == len(expected_cells) \
+        and incomplete <= m["budget"]["max_incomplete_attempts"]
     units = independent_units(bundle)
     per_arm = {arm: {metric: {} for metric in METRICS} for arm in ARMS}
     for arm in ARMS:
@@ -992,6 +1032,8 @@ def report(path, output):
             "recommendation": recommendation,
             "withholding": [key for key, ok in gates.items() if not ok] + ([] if recommendation == verdict else ["not real-world model measurements"]),
             "observed": observed, "absolute_means": absolute, "outcomes": results,
+            "incomplete_attempts": {"count": incomplete, "allowed": m["budget"]["max_incomplete_attempts"], "by_arm": failed,
+                                    "scoring": "answers_nothing_never_retried"},
             "cost": {"observed_cost_complete": monetary_complete, "cost_gates_verdict": _cost_required(m),
                      "observed_subtotal_usd": str(observed_subtotal), "observed_total_usd": str(observed_subtotal) if monetary_complete else None,
                      "catalog_estimate_subtotal_usd": str(sum((_money(f["accounting"]["catalog_estimate_subtotal_usd"]) for f in finishes.values()), Decimal(0))),
@@ -1006,8 +1048,10 @@ class HostExecutor:
 
     The host process/event stream is trusted, not same-UID OS-sandboxed. Model-written
     journals are not attestations. Stock catalog costs remain estimates, so observed
-    cost stays incomplete and each attempt charges its full reservation; that stops the
-    experiment and withholds a verdict only when the primary metric is total_cost_usd.
+    cost stays incomplete; each attempt charges the larger of its reservation and its
+    reported-plus-estimated cost. Unknown cost stops the experiment and withholds a
+    verdict only when the primary metric is total_cost_usd. The final host reply is kept
+    beside the request (private run directory) so a refused answer can be diagnosed.
     """
     def __init__(self, bundle):
         self.bundle = bundle
@@ -1217,6 +1261,8 @@ class HostExecutor:
                     receipts, judge_models = self.collect_receipts(shared, messages, extraction_results, arm, observations,
                         digest(request["identity"]), proc.returncode == 0 and ended and not malformed)
                     _exclusive(directory / "captured-receipts.json", canonical(receipts))
+            if answers:
+                _exclusive(directory / "host-answer.txt", answers[-1].encode("utf-8", "replace")[:MAX_FILE_BYTES])
             invoked = arm == "C" and len(extraction_results) == 1 and extraction_results[0]["published"]
             _require(proc.returncode == 0 and ended and not malformed and bool(answers), "host execution incomplete")
             answer = decode(self.answer_json(answers[-1]))
@@ -1516,7 +1562,7 @@ def synthetic_fixture(root, scenario="improves"):
                                "tie": "keep_deterministic", "human_time_protocol": None, "secondary_direct": True},
                 "design": {"repetitions": 2, "seed": 907, "order": "seeded_shuffled_blocks", "max_retries": 0},
                 "budget": {"max_attempts": 24, "max_allocation_usd": "24", "reservation_per_attempt_usd": "1",
-                           "policy": "best_effort_reservation", "uncertain_charge": "full_reservation", "stop_on_incomplete": True}}
+                           "policy": "best_effort_reservation", "uncertain_charge": "full_reservation", "max_incomplete_attempts": 0}}
     manifest_path = root / "manifest.json"
     _exclusive(manifest_path, canonical(manifest))
     bundle = load_manifest(manifest_path)

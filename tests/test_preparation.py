@@ -377,6 +377,63 @@ class PreparationFixture(unittest.TestCase):
         self.assertEqual(result["stop"]["allocation_consumed_usd"], "1")
         self.assertEqual(result["recommendation"], "inconclusive")
 
+    def test_catalog_estimates_count_against_the_approved_allocation(self):
+        manifest, outcomes = self.fixture()
+        self.live_shaped_unknown_costs(outcomes)
+        rows = p.decode(outcomes.read_bytes())
+        for row in rows.values():
+            for receipt in row["receipts"]:
+                if receipt["stage"] == "completion":
+                    receipt["cost_usd"] = "3"
+        outcomes.write_bytes(p.canonical(rows))
+        result = p.run_experiment(manifest, manifest.parent / "run", executor=p.InjectedExecutor(outcomes))
+        # Estimated $3 per attempt against $1 reservations: the $24 ceiling binds after 8 attempts, not 24.
+        self.assertEqual(result["stop"]["reason"], "authorized_admission_cap")
+        self.assertEqual(result["cost"]["attempts"], 8)
+        self.assertGreaterEqual(float(result["stop"]["allocation_consumed_usd"]), 24)
+        self.assertLess(float(result["cost"]["observed_subtotal_usd"]), 1)
+
+    def test_frozen_tolerance_charges_a_failed_attempt_to_its_cell_not_the_run(self):
+        manifest, outcomes = self.fixture()
+        self.mutate(manifest, outcomes, lambda m: m["budget"].update(max_incomplete_attempts=1))
+        bundle = p.load_manifest(manifest)
+        victim = next(cell for cell in p.schedule(bundle) if cell[1] == "C")
+        injected = p.InjectedExecutor(outcomes)
+        def flaky(request, directory):
+            i = request["identity"]
+            if (i["case"], i["arm"], i["rep"]) == victim:
+                raise ValueError("unparsable host reply")
+            return injected(request, directory)
+        result = p.run_experiment(manifest, manifest.parent / "run", executor=flaky)
+        self.assertEqual(result["stop"]["reason"], "schedule_complete")
+        self.assertEqual(result["stop"]["incomplete_attempts"], 1)
+        self.assertEqual(result["cost"]["attempts"], 24)
+        self.assertTrue(result["gates"]["complete_outcomes"])
+        self.assertEqual(result["incomplete_attempts"]["by_arm"], {"A": 0, "B": 0, "C": 1, "D": 0})
+        failed = [r for r in result["outcomes"] if r["failed"]]
+        self.assertEqual([(r["case"], r["arm"], r["rep"]) for r in failed], [victim])
+        # The failed attempt is neither dropped nor retried: it answers nothing.
+        self.assertEqual(failed[0]["metrics"]["decision_accuracy"], 0)
+        self.assertEqual(failed[0]["metrics"]["unresolved_rate"], 1)
+        self.assertLess(result["absolute_means"]["C"]["decision_accuracy"], 1)
+        self.assertEqual(result, p.report(manifest, manifest.parent / "run"))
+
+    def test_failures_beyond_the_frozen_tolerance_stop_the_run(self):
+        manifest, outcomes = self.fixture()
+        self.mutate(manifest, outcomes, lambda m: m["budget"].update(max_incomplete_attempts=1))
+        calls = []
+        def broken(request, directory):
+            calls.append(request)
+            raise ValueError("unparsable host reply")
+        result = p.run_experiment(manifest, manifest.parent / "run", executor=broken)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["stop"]["reason"], "incomplete_evidence")
+        self.assertFalse(result["gates"]["complete_outcomes"])
+        self.assertEqual(result["primary_contrast"]["gate_verdict"], "inconclusive")
+        with self.assertRaisesRegex(ValueError, "tolerance"):
+            self.mutate(manifest, None, lambda m: m["budget"].update(max_incomplete_attempts=True))
+            p.load_manifest(manifest)
+
     def test_interruption_is_durable_unknown_spend_and_never_retried(self):
         manifest, _ = self.fixture()
         calls = []
@@ -880,6 +937,30 @@ class PreparationFixture(unittest.TestCase):
                 self.assertTrue(p.validate_outcome(result, request)["provenance_complete"])
                 self.assertEqual([r["status"] for r in result["receipts"] if r["stage"] == "completion"],
                                  ["complete", "failed", "complete"])
+
+    def test_refused_final_reply_is_kept_beside_the_request_for_diagnosis(self):
+        manifest, _ = self.fixture()
+        bundle = p.load_manifest(manifest)
+        bundle["manifest"]["candidate"] = {"root": str(ROOT), "entry": "src/index.ts", "files": {}}
+        request = p.request_for(bundle, bundle["cases"][0]["manifest"]["id"], "D", 0, 0)
+        directory = self.root / "controller-refused"
+        directory.mkdir()
+        reply = "Here is my answer — sorry, not JSON."
+        events = [{"type": "message_end", "message": {"role": "assistant", "model": "fixture-model", "stopReason": "stop",
+                   "content": [{"type": "text", "text": reply}], "usage": {"input": 11}}}, {"type": "agent_end"}]
+        def launch(*args, **kwargs):
+            read_fd, write_fd = os.pipe()
+            os.write(write_fd, b"".join(p.canonical(row) + b"\n" for row in events))
+            os.close(write_fd)
+            return SimpleNamespace(stdout=os.fdopen(read_fd, "rb"), returncode=0, wait=lambda **kwargs: 0)
+        shared = p._shared()
+        with patch.object(p, "_shared", return_value=shared), patch.object(p.subprocess, "Popen", side_effect=launch), \
+                patch.object(shared, "kill_tree"), \
+                patch("threading.Timer", return_value=SimpleNamespace(start=lambda: None, cancel=lambda: None)):
+            with self.assertRaises(ValueError):
+                p.HostExecutor(bundle)(request, directory)
+        self.assertEqual((directory / "host-answer.txt").read_text(), reply)
+        self.assertIn("host-answer.txt", p.artifact_hashes(directory))
 
     def test_keyboard_interrupt_drains_late_receipt_and_ignores_forged_disk_usage(self):
         manifest, _ = self.fixture()

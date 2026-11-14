@@ -137,9 +137,9 @@ One owner-approved controlled comparison ran the same day on 11 owner-adjudicate
 realistic review cases (manifest `0b6374d2…efc0`, case text kept outside this repository).
 It stopped under its frozen rule after 34 of 88 attempts, when one host reply was not
 valid JSON, and its recommendation is **inconclusive**. Clairic returned no candidates in
-any of the 10 extraction attempts: the frozen field needed the review comment and the code
-together, and each source was sent on its own. The run therefore gives no evidence for or
-against extraction. Details are in
+any of the 10 extraction attempts. Each request carried the other source in its
+instructions, so the cause of the abstentions is not yet known. The run therefore gives no
+evidence for or against extraction. Details are in
 [`plans/clairic-04-controlled-evaluation.md`](plans/clairic-04-controlled-evaluation.md).
 No accuracy, savings or review-time improvement is claimed.
 Provider-reported usage is not a settled invoice; unknown costs remain unknown.
