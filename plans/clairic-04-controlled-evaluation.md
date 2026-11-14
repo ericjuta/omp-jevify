@@ -61,6 +61,8 @@ The existing strategy gate deliberately rejects many comparisons that look super
 
 Final review identified that model-writable session journals cannot attest judge identity or costs, requested effort is not observed effort, and irrelevant source padding cannot make a repeated gold key independent. Completion receipts must remain readable during interrupted shutdown. Release acceptance includes regressions at these boundaries, rather than relying on successful synthetic reports alone.
 
+2026-11-14: the approved live wire smoke showed the Clairic route reports cost `0` with no corroboration, and the host's completion receipts are catalog estimates. The runner treated any unknown cost as incomplete evidence, so a live run would have stopped after its first attempt and could never reach a verdict, which was stricter than this plan. Cost completeness now stops a run and gates a verdict only when the frozen primary metric is `total_cost_usd`. Unknown-cost attempts still consume their full reservation, cost totals stay null, and the report states whether observed cost was complete. Missing answers or provenance still stop a run.
+
 ## Decision Log
 
 2026-11-07, superseding owner decision: Clairic defaults on for selected public/private non-secret source, with explicit opt-out and deterministic fallback, using host-resolved credentials including host environment-key fallback. Implementation and shipping are authorized. Exact manifest digest and cap approval remain mandatory before live experiments.

@@ -13,6 +13,8 @@ Injection is software evidence, not a model measurement. Gold and adjudication n
 enter execution requests. Live execution additionally requires an exact manifest/cap
 approval and the installed candidate's bound files. Dollar reservations bound admission,
 not invoices. Unknown costs are not zero, and aborted reservations are never replayed.
+Unknown cost charges the full reservation; it stops a run and withholds a verdict only
+when the frozen primary metric is ``total_cost_usd``.
 """
 
 import argparse
@@ -765,8 +767,14 @@ def run_experiment(path, output, *, executor=None, approval=None, live=False, re
         return _run_admitted_experiment(path, output, bundle, executor, approval_sha, live, resume, started)
 
 
+def _cost_required(manifest):
+    """Cost completeness gates evidence only when the frozen benefit criterion is cost."""
+    return manifest["thresholds"]["primary"]["metric"] == "total_cost_usd"
+
+
 def _run_admitted_experiment(path, output, bundle, executor, approval_sha, live, resume, started):
     m = bundle["manifest"]
+    cost_required = _cost_required(m)
     execution_identity = getattr(executor, "identity", {"kind": "injected_callable", "sha256": None})
     header = {"event": "start", "manifest_sha256": bundle["manifest_sha256"], "raw_sha256": bundle["raw_sha256"],
               "started_at": started, "approval_sha256": approval_sha, "execution": execution_identity,
@@ -825,7 +833,10 @@ def _run_admitted_experiment(path, output, bundle, executor, approval_sha, live,
                 elapsed = time.monotonic() - begin
                 _exclusive(directory / "outcome.json", canonical(outcome))
                 accounting = validation["accounting"]
-                complete = validation["required_complete"] and validation["provenance_complete"] and accounting["cost_complete"]
+                # Unknown cost still consumes the full reservation (see `spent`); it is
+                # incomplete evidence only when the primary metric is cost.
+                complete = validation["required_complete"] and validation["provenance_complete"] \
+                    and (accounting["cost_complete"] or not cost_required)
                 finish = {"event": "finish", "attempt_id": attempt_id, "outcome_sha256": digest(outcome),
                           "latency_seconds": elapsed, "accounting": accounting, "complete": complete,
                           "validation": validation, "error": None, "artifacts": artifact_hashes(directory)}
@@ -935,10 +946,12 @@ def report(path, output):
     evidence_class = records[0]["evidence_class"]
     frozen_gold = all(c["manifest"]["split"] == "heldout" and not any(e["kind"] in ("tuned", "evaluated", "published")
                       for e in c["manifest"]["exposure_history"]) for c in bundle["cases"])
+    monetary_complete = bool(finishes) and len(finishes) == len(reservations) and all(f["accounting"]["cost_complete"] for f in finishes.values())
     gates = {"complete_outcomes": bool(complete), "observed_B_C_identity": len(models["B"]) == 1 and models["B"] == models["C"],
              "heldout_unexposed_gold": frozen_gold, "independent_minimum": len(units) >= m["thresholds"]["min_cases"],
-             "no_duplicate_aliases": all(len(u) == 1 for u in units),
-             "observed_cost_complete": len(finishes) == len(reservations) and bool(finishes) and all(f["accounting"]["cost_complete"] for f in finishes.values())}
+             "no_duplicate_aliases": all(len(u) == 1 for u in units)}
+    if _cost_required(m):
+        gates["observed_cost_complete"] = monetary_complete
     verdict = "inconclusive"
     if all(gates.values()):
         if _decision(bc, absolute["C"], m["thresholds"]):
@@ -957,7 +970,6 @@ def report(path, output):
             and _decision(contrast("B", "D"), absolute["D"], m["thresholds"]):
         direct = "direct-review preferred"
     observed_subtotal = sum((_money(f["accounting"]["reported_subtotal_usd"]) for f in finishes.values()), Decimal(0))
-    monetary_complete = bool(finishes) and len(finishes) == len(reservations) and all(f["accounting"]["cost_complete"] for f in finishes.values())
     recommendation = verdict if evidence_class == "model_measurement" and all(c["manifest"]["kind"] == "realistic" for c in bundle["cases"]) else "inconclusive"
     stages = {}
     for stage in STAGES:
@@ -980,7 +992,8 @@ def report(path, output):
             "recommendation": recommendation,
             "withholding": [key for key, ok in gates.items() if not ok] + ([] if recommendation == verdict else ["not real-world model measurements"]),
             "observed": observed, "absolute_means": absolute, "outcomes": results,
-            "cost": {"observed_subtotal_usd": str(observed_subtotal), "observed_total_usd": str(observed_subtotal) if monetary_complete else None,
+            "cost": {"observed_cost_complete": monetary_complete, "cost_gates_verdict": _cost_required(m),
+                     "observed_subtotal_usd": str(observed_subtotal), "observed_total_usd": str(observed_subtotal) if monetary_complete else None,
                      "catalog_estimate_subtotal_usd": str(sum((_money(f["accounting"]["catalog_estimate_subtotal_usd"]) for f in finishes.values()), Decimal(0))),
                      "accounting_basis": "provider_reported_not_invoice", "billing_complete": False,
                      "hard_invoice_cap": False, "attempts": len(reservations), "stages": stages,
@@ -992,8 +1005,9 @@ class HostExecutor:
     """Separate-workspace OMP launch; only C admits the pinned extraction extension.
 
     The host process/event stream is trusted, not same-UID OS-sandboxed. Model-written
-    journals are not attestations. Stock catalog costs remain estimates; unknown
-    reported costs can deliberately stop an experiment after its first paid attempt.
+    journals are not attestations. Stock catalog costs remain estimates, so observed
+    cost stays incomplete and each attempt charges its full reservation; that stops the
+    experiment and withholds a verdict only when the primary metric is total_cost_usd.
     """
     def __init__(self, bundle):
         self.bundle = bundle

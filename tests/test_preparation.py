@@ -281,6 +281,93 @@ class PreparationFixture(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate receipt"):
             p.account(row["receipts"])
 
+    def live_shaped_unknown_costs(self, outcomes):
+        """Mirror live receipts: catalog-estimated completion, Clairic cost reported 0 without completeness."""
+        rows = p.decode(outcomes.read_bytes())
+        for row in rows.values():
+            for receipt in row["receipts"]:
+                if receipt["stage"] == "completion":
+                    receipt["cost_evidence"] = "catalog_estimate"
+                elif receipt["stage"] == "extraction" and receipt["status"] != "not_used":
+                    receipt["cost_usd"] = None
+                    receipt["cost_evidence"] = "unknown"
+        outcomes.write_bytes(p.canonical(rows))
+
+    def test_unknown_cost_does_not_stop_or_gate_a_non_cost_primary_metric(self):
+        manifest, outcomes = self.fixture()
+        self.live_shaped_unknown_costs(outcomes)
+        result = p.run_experiment(manifest, manifest.parent / "run", executor=p.InjectedExecutor(outcomes))
+        self.assertEqual(result["stop"]["reason"], "schedule_complete")
+        self.assertEqual(result["cost"]["attempts"], 24)
+        self.assertEqual(len(result["outcomes"]), 24)
+        self.assertTrue(result["gates"]["complete_outcomes"])
+        self.assertNotIn("observed_cost_complete", result["gates"])
+        self.assertEqual(result["primary_contrast"]["gate_verdict"], "adopt")
+        self.assertEqual(result["recommendation"], "inconclusive")
+        self.assertFalse(result["cost"]["observed_cost_complete"])
+        self.assertFalse(result["cost"]["cost_gates_verdict"])
+        self.assertIsNone(result["cost"]["observed_total_usd"])
+        self.assertEqual(result["cost"]["uncertain_attempts"], 24)
+        self.assertFalse(result["cost"]["billing_complete"])
+        self.assertFalse(result["cost"]["hard_invoice_cap"])
+        self.assertEqual(result["stop"]["allocation_consumed_usd"], "24")
+        self.assertIsNone(result["primary_contrast"]["metrics"]["total_cost_usd"]["interval"])
+        self.assertTrue(all(r["metrics"]["total_cost_usd"] is None for r in result["outcomes"]))
+        self.assertEqual(result, p.report(manifest, manifest.parent / "run"))
+
+    def test_resume_continues_after_complete_answers_with_unknown_cost(self):
+        manifest, outcomes = self.fixture()
+        self.live_shaped_unknown_costs(outcomes)
+        bundle = p.load_manifest(manifest)
+        executor = p.InjectedExecutor(outcomes)
+        directory = manifest.parent / "run"
+        directory.mkdir()
+        (directory / "manifest.json").write_bytes(p.canonical(bundle["manifest"]))
+        header = {"event": "start", "manifest_sha256": bundle["manifest_sha256"], "raw_sha256": bundle["raw_sha256"],
+                  "started_at": p.now(), "approval_sha256": None, "execution": executor.identity,
+                  "evidence_class": "injected_software_evidence"}
+        ledger = directory / "attempts.jsonl"
+        previous = p._journal(ledger, header, None)
+        cid, arm, rep = p.schedule(bundle)[0]
+        request = p.request_for(bundle, cid, arm, rep, 0)
+        aid = p.sha(p.canonical(request["identity"]))
+        (directory / aid).mkdir()
+        (directory / aid / "request.json").write_bytes(p.canonical(request))
+        previous = p._journal(ledger, {"event": "reserve", "attempt_id": aid, "case": cid, "arm": arm, "rep": rep, "attempt": 0,
+                                       "request_sha256": p.digest(request), "reservation_usd": "1"}, previous)
+        outcome = executor(request, directory / aid)
+        (directory / aid / "outcome.json").write_bytes(p.canonical(outcome))
+        validation = p.validate_outcome(outcome, request)
+        self.assertFalse(validation["accounting"]["cost_complete"])
+        p._journal(ledger, {"event": "finish", "attempt_id": aid, "outcome_sha256": p.digest(outcome), "latency_seconds": 1,
+                            "accounting": validation["accounting"], "complete": True, "validation": validation,
+                            "error": None, "artifacts": p.artifact_hashes(directory / aid)}, previous)
+        result = p.run_experiment(manifest, directory, executor=executor, resume=True)
+        self.assertEqual(result["stop"]["reason"], "schedule_complete")
+        self.assertEqual(result["cost"]["attempts"], 24)
+        self.assertTrue(result["gates"]["complete_outcomes"])
+        self.assertEqual(result["primary_contrast"]["gate_verdict"], "adopt")
+        self.assertEqual(result["cost"]["uncertain_attempts"], 24)
+        self.assertEqual(result, p.report(manifest, directory))
+
+    def test_unknown_cost_stops_and_withholds_when_primary_metric_is_cost(self):
+        manifest, outcomes = self.fixture()
+        self.mutate(manifest, outcomes, lambda m: m["thresholds"].update(
+            primary={"metric": "total_cost_usd", "direction": "lower", "min_improvement": .001}))
+        self.live_shaped_unknown_costs(outcomes)
+        result = p.run_experiment(manifest, manifest.parent / "run", executor=p.InjectedExecutor(outcomes))
+        self.assertEqual(result["stop"]["reason"], "incomplete_evidence")
+        self.assertEqual(result["cost"]["attempts"], 1)
+        self.assertFalse(result["gates"]["complete_outcomes"])
+        self.assertFalse(result["gates"]["observed_cost_complete"])
+        self.assertIn("observed_cost_complete", result["withholding"])
+        self.assertTrue(result["cost"]["cost_gates_verdict"])
+        self.assertFalse(result["cost"]["observed_cost_complete"])
+        self.assertIsNone(result["cost"]["observed_total_usd"])
+        self.assertEqual(result["cost"]["uncertain_attempts"], 1)
+        self.assertEqual(result["primary_contrast"]["gate_verdict"], "inconclusive")
+        self.assertEqual(result, p.report(manifest, manifest.parent / "run"))
+
     def test_approved_attempt_allocation_caps_stop_without_silent_scope_change(self):
         manifest, outcomes = self.fixture()
         self.mutate(manifest, outcomes, lambda m: m["budget"].update(max_allocation_usd="1"))
