@@ -137,8 +137,9 @@ One owner-approved controlled comparison ran the same day on 11 owner-adjudicate
 realistic review cases (manifest `0b6374d2…efc0`, case text kept outside this repository).
 It stopped under its frozen rule after 34 of 88 attempts, when one host reply was not
 valid JSON, and its recommendation is **inconclusive**. Clairic returned no candidates in
-any of the 10 extraction attempts; the likely cause, not confirmed, is that the field was
-asked of both sources and two differing answers were recorded as ambiguous. The run
+any of the 10 extraction attempts. The field was asked of both sources and two differing
+answers were recorded as ambiguous; a two-request check on a public synthetic pair
+(2026-11-15) reproduced this, and fields must now name their source roles. The run
 therefore gives no evidence for or against extraction.
 
 Two owner-approved design probes followed (37 requests). Asked for the code line a review
